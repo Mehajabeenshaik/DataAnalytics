@@ -43,6 +43,7 @@ class DataSource:
         self.table_name = "data"
         self.profile: TableProfile | None = None
         self._allowed_filter_columns: list[str] = []
+        self._metrics_cache: dict | None = None
 
     # ── Loading methods ────────────────────────────────────────────────────
 
@@ -79,10 +80,39 @@ class DataSource:
         self._build_profile()
 
     def load_sqlite(self, db_path: str, query: str = "SELECT * FROM orders_enriched") -> None:
-        """Bridge to an existing SQLite database (e.g. ecommerce.db)."""
+        """Bridge to an existing SQLite database (e.g. ecommerce.db).
+
+        Tries DuckDB's native SQLite ATTACH first; falls back to pandas
+        if the sqlite extension is unavailable.
+        """
+        import re
+
+        # Normalise Windows back-slashes — DuckDB expects POSIX paths.
+        norm_path = db_path.replace("\\", "/")
+
         try:
-            self.con.execute(f"ATTACH '{db_path}' AS src (TYPE SQLITE)")
-            self.con.execute(f"CREATE OR REPLACE TABLE data AS SELECT * FROM src.({query})")
+            self.con.execute(f"ATTACH '{norm_path}' AS src (TYPE SQLITE)")
+
+            # Build a schema-qualified query.
+            # If the caller passed a bare table name (no spaces / SELECT),
+            # wrap it.  Otherwise treat it as a full SELECT and rewrite
+            # bare table references to ``src.<table>`` via regex.
+            stripped = query.strip()
+            if not re.search(r"\s", stripped):
+                # Bare table name, e.g. "orders_enriched"
+                safe_query = f"SELECT * FROM src.{stripped}"
+            elif re.match(r"^\s*SELECT\b", stripped, re.IGNORECASE):
+                # Full SELECT — rewrite FROM/JOIN <table> → src.<table>
+                safe_query = re.sub(
+                    r"(\bFROM\s+|\bJOIN\s+)([A-Za-z_][A-Za-z0-9_]*)",
+                    r"\1src.\2",
+                    stripped,
+                )
+            else:
+                # Fallback: assume bare table name
+                safe_query = f"SELECT * FROM src.{stripped}"
+
+            self.con.execute(f"CREATE OR REPLACE TABLE data AS {safe_query}")
             self.table_name = "data"
             self._build_profile()
         except Exception:
@@ -151,14 +181,25 @@ class DataSource:
             if c.is_categorical or c.is_temporal or (c.n_unique and c.n_unique <= 30)
         ]
 
+        # Invalidate metrics cache when data changes
+        self._metrics_cache = None
+
     # ── Public API ─────────────────────────────────────────────────────────
 
     @property
     def allowed_filter_columns(self) -> list[str]:
         return self._allowed_filter_columns
 
+    def get_metrics(self) -> dict:
+        """Return cached metrics, generating them on first access."""
+        if self._metrics_cache is None:
+            from metric_factory import generate_metrics
+
+            self._metrics_cache = generate_metrics(self)
+        return self._metrics_cache
+
     def query(self, sql: str, params: list | None = None) -> pd.DataFrame:
-        """Only called by the safe execution layer — never by the LLM."""
+        """Only called by the safe execution layer -- never by the LLM."""
         if params:
             return self.con.execute(sql, params).fetchdf()
         return self.con.execute(sql).fetchdf()

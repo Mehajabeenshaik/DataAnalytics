@@ -303,6 +303,7 @@ def render_sidebar(user: dict) -> str:
             "🛒  Products":     "products",
             "🤖  AI Query":     "ai_query",
             "🔮  Forecasting":  "forecast",
+            "📂  Bring Your Data": "byod",
         }
         if user.get("role") == "admin":
             pages["🛡️  Admin Panel"] = "admin"
@@ -634,6 +635,162 @@ def page_forecast(df):
         )
 
 
+def page_bring_your_data():
+    """Bring Your Own Data page -- upload CSV/Parquet and chat with the Phase 1 agent."""
+    st.markdown("""
+    <div class="hero-header">
+      <p class="hero-title">📂 Bring Your Own Data</p>
+      <p class="hero-subtitle">Upload any CSV or Parquet file and ask questions in plain English</p>
+    </div>
+    """, unsafe_allow_html=True)
+
+    from data_source import DataSource
+    from agent_core import ask
+    from llm_provider import get_provider
+    from config import LLM_PROVIDER
+
+    # ── Data source options ──
+    st.markdown('<div class="section-heading">Load Data</div>', unsafe_allow_html=True)
+
+    col_src1, col_src2 = st.columns(2)
+    with col_src1:
+        st.markdown("**📁 Upload a file**")
+        uploaded = st.file_uploader(
+            "CSV or Parquet",
+            type=["csv", "tsv", "parquet", "pq"],
+            key="byod_upload",
+            label_visibility="collapsed",
+        )
+    with col_src2:
+        st.markdown("**🛒 Load e-commerce data**")
+        if st.button("Load ecommerce data", key="byod_load_ecommerce",
+                     use_container_width=True, type="secondary"):
+            try:
+                from data_layer import init_db, DB_PATH
+                init_db()  # ensure plaintext DB exists (no-op if already seeded)
+                ds = DataSource()
+                ds.load_sqlite(DB_PATH)
+                st.session_state["byod_ds"] = ds
+                st.success(
+                    f"Loaded ecommerce data: {ds.profile.n_rows:,} rows × "
+                    f"{ds.profile.n_cols} cols"
+                )
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to load ecommerce data: {e}")
+
+    if uploaded is not None:
+        # Load into DataSource
+        import tempfile
+        import os
+
+        suffix = os.path.splitext(uploaded.name)[1]
+        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False, mode="wb") as f:
+            f.write(uploaded.getvalue())
+            tmp_path = f.name
+
+        try:
+            ds = DataSource()
+            ds.load_file(tmp_path)
+            st.session_state["byod_ds"] = ds
+            st.success(f"Loaded {uploaded.name}: {ds.profile.n_rows:,} rows × {ds.profile.n_cols} cols")
+            st.rerun()
+        except Exception as e:
+            st.error(f"Failed to load file: {e}")
+        finally:
+            os.unlink(tmp_path)
+
+    # ── Show schema card + metric catalog ──
+    ds = st.session_state.get("byod_ds")
+    if ds is not None:
+        col1, col2 = st.columns([2, 1])
+        with col1:
+            st.markdown('<div class="section-heading">Schema</div>', unsafe_allow_html=True)
+            st.code(ds.get_schema_card(), language="text")
+
+        with col2:
+            st.markdown('<div class="section-heading">Allowed Filters</div>', unsafe_allow_html=True)
+            for col in ds.allowed_filter_columns:
+                st.markdown(f"- `{col}`")
+
+        # ── Metric catalog preview ──
+        with st.expander(f"📋 Metric catalog ({len(ds.get_metrics())} metrics)", expanded=False):
+            from metric_factory import get_metric_catalog_for_llm
+            catalog = get_metric_catalog_for_llm(ds.get_metrics())
+            st.dataframe(
+                catalog,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+        # ── Ask questions ──
+        st.markdown('<div class="section-heading">Ask a Question</div>', unsafe_allow_html=True)
+
+        provider_choice = st.selectbox(
+            "LLM Provider",
+            ["ollama", "gemini"],
+            index=0 if LLM_PROVIDER == "ollama" else 1,
+            key="byod_provider",
+        )
+
+        question = st.text_area(
+            "Your question",
+            placeholder="e.g. What is the total revenue? Show me revenue by region.",
+            height=80,
+            key="byod_question",
+        )
+
+        if st.button("Run Query", type="primary", key="byod_run"):
+            if not question.strip():
+                st.warning("Please enter a question.")
+                st.stop()
+
+            with st.spinner("Analyzing..."):
+                try:
+                    provider = get_provider(provider_choice)
+                    result = ask(question, ds, provider)
+                    st.session_state["byod_last_result"] = result
+                except Exception as e:
+                    st.error(f"Error: {e}")
+                    st.stop()
+
+        # ── Results ──
+        last = st.session_state.get("byod_last_result")
+        if last:
+            if last.get("metric_used") is None:
+                st.info(f"🤔 {last['answer']}")
+            else:
+                st.success(f"✅ {last['answer']}")
+
+            if last.get("metric_used"):
+                st.markdown(f"**Metric:** `{last['metric_used']}`")
+
+            confidence = last.get("confidence", "n/a")
+            if confidence == "high":
+                st.markdown("🟢 **Confidence:** high")
+            elif confidence == "low":
+                st.markdown("🟡 **Confidence:** low")
+
+            if last.get("caveat"):
+                st.warning(f"⚠️ {last['caveat']}")
+
+            if last.get("filters_used"):
+                st.markdown("**Filters:**")
+                for k, v in last["filters_used"].items():
+                    st.markdown(f"- `{k}` = `{v}`")
+
+            if last.get("result") is not None:
+                st.markdown('<div class="section-heading">Raw Result</div>', unsafe_allow_html=True)
+                import pandas as pd
+                result = last["result"]
+                if isinstance(result, pd.Series):
+                    st.dataframe(result.reset_index(), use_container_width=True, hide_index=True)
+                elif isinstance(result, (int, float)):
+                    st.metric("Result", f"{result:,.2f}" if isinstance(result, float) else str(result))
+                else:
+                    st.write(result)
+
+
 def page_admin(df):
     st.markdown("""
     <div class="hero-header">
@@ -758,6 +915,8 @@ def main():
         page_ai_query(df)
     elif page == "forecast":
         page_forecast(df)
+    elif page == "byod":
+        page_bring_your_data()
     elif page == "admin":
         if user.get("role") != "admin":
             st.error("🚫 Access denied. Admin role required.")

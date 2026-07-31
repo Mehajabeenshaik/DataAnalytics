@@ -1,5 +1,5 @@
 """
-Phase 1 governed agent — data-agnostic, still fully safe.
+Phase 1 governed agent -- data-agnostic, still fully safe.
 LLM only selects from the auto-generated metric catalog.
 """
 
@@ -12,7 +12,7 @@ import pandas as pd
 from pydantic import BaseModel, ValidationError
 
 from data_source import DataSource
-from metric_factory import generate_metrics, get_metric_catalog_for_llm
+from metric_factory import get_metric_catalog_for_llm
 from llm_provider import LLMProvider
 
 
@@ -93,7 +93,7 @@ def select_metric(
 # ── Step 2: deterministic query execution (NO LLM call) ──────────────────
 
 def run_metric(ds: DataSource, metric: dict, filters: dict) -> Any:
-    """Deterministic execution — zero LLM involvement."""
+    """Deterministic execution -- zero LLM involvement."""
     table = ds.table_name
     col = metric["column"]
     agg = metric["agg"]
@@ -154,7 +154,7 @@ def explain(question: str, metric_name: str, result: Any, provider: LLMProvider)
 
     if is_small and data.get("confidence") == "high":
         data["confidence"] = "low"
-        data["caveat"] = (data.get("caveat") or "") + " Small result set — interpret with caution."
+        data["caveat"] = (data.get("caveat") or "") + " Small result set -- interpret with caution."
 
     return data
 
@@ -162,7 +162,8 @@ def explain(question: str, metric_name: str, result: Any, provider: LLMProvider)
 # ── Top-level entrypoint ──────────────────────────────────────────────────
 
 def ask(question: str, ds: DataSource, provider: LLMProvider) -> dict:
-    metrics = generate_metrics(ds)
+    # Use cached metrics from DataSource (avoids regenerating on every call)
+    metrics = ds.get_metrics()
     selection = select_metric(
         question, metrics, ds.allowed_filter_columns, provider
     )
