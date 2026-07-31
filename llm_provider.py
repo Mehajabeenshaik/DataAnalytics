@@ -9,7 +9,15 @@ from config import (
 
 class LLMProvider(abc.ABC):
     @abc.abstractmethod
-    def generate(self, prompt: str, system_prompt: str = "") -> str:
+    def generate(self, prompt: str, system_prompt: str = "", temperature: float = 0.1) -> str:
+        """Generate text from the LLM.
+
+        Args:
+            prompt: The user prompt.
+            system_prompt: Optional system instruction.
+            temperature: Sampling temperature. Low (0.1) for deterministic
+                         routing decisions; higher (0.7+) for natural text.
+        """
         ...
 
     @abc.abstractmethod
@@ -40,7 +48,7 @@ class OllamaProvider(LLMProvider):
         except Exception:
             return []
 
-    def generate(self, prompt: str, system_prompt: str = "") -> str:
+    def generate(self, prompt: str, system_prompt: str = "", temperature: float = 0.1) -> str:
         messages = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -49,7 +57,12 @@ class OllamaProvider(LLMProvider):
         try:
             r = requests.post(
                 f"{self.base_url}/api/chat",
-                json={"model": self.model, "messages": messages, "stream": False},
+                json={
+                    "model": self.model,
+                    "messages": messages,
+                    "stream": False,
+                    "options": {"temperature": temperature},
+                },
                 timeout=120,
             )
             r.raise_for_status()
@@ -73,20 +86,24 @@ class GeminiProvider(LLMProvider):
             raise ValueError(
                 "GEMINI_API_KEY not set. Export it or switch LLM_PROVIDER to 'ollama'."
             )
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        self.model = genai.GenerativeModel(
-            model_name=model,
-            system_instruction=None,
-        )
+        from google import genai
+        self.client = genai.Client(api_key=api_key)
         self._model_name = model
 
     def provider_name(self) -> str:
         return f"gemini/{self._model_name}"
 
-    def generate(self, prompt: str, system_prompt: str = "") -> str:
-        full_prompt = f"{system_prompt}\n\n{prompt}" if system_prompt else prompt
-        response = self.model.generate_content(full_prompt)
+    def generate(self, prompt: str, system_prompt: str = "", temperature: float = 0.1) -> str:
+        from google.genai import types
+        config = types.GenerateContentConfig(
+            temperature=temperature,
+            system_instruction=system_prompt if system_prompt else None,
+        )
+        response = self.client.models.generate_content(
+            model=self._model_name,
+            contents=prompt,
+            config=config,
+        )
         return response.text
 
 

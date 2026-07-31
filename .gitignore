@@ -1,4 +1,17 @@
 __pycache__/
 *.pyc
+
+# ── Secrets & env files ──────────────────────────────────────────────
+# .env contains real API keys — NEVER commit it.
+# .env.example is safe (placeholders only) and SHOULD be committed.
+.env
+.env.local
+.env.*.local
+
+# ── Databases ───────────────────────────────────────────────────────
+# Plaintext DBs are gitignored (contain real data).
 *.db
 *.db.key
+
+# Encrypted DBs (*.db.enc) are safe to commit — they're Fernet-encrypted.
+# Do NOT add *.db.enc here.

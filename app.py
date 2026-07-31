@@ -20,17 +20,12 @@ Run
 
 import os
 import streamlit as st
+from dotenv import load_dotenv
 
-# ── Must set JWT_SECRET_KEY before any project import ──────────────────
-# Mirrors conftest.py — ensures config.py doesn't raise RuntimeError
-# when Streamlit re-runs the script in a subprocess.
-import sys
-_jwt = os.environ.get("JWT_SECRET_KEY", "")
-if not _jwt or _jwt == "change-this-in-production-use-secrets-token":
-    os.environ.setdefault(
-        "JWT_SECRET_KEY",
-        "streamlit-dev-secret-replace-in-production-8f2a1b3c",
-    )
+# Load .env file before any project import — ensures JWT_SECRET_KEY and
+# other secrets are available when config.py is imported. This replaces
+# the old hardcoded dev-secret fallback. Secrets now live in .env only.
+load_dotenv()
 
 from auth_middleware import require_auth, get_current_user, logout, is_admin
 import app_utils as au
@@ -481,6 +476,19 @@ def page_products(df, _kpis):
     import plotly.express as px
     fig = px.treemap(
         subcat,
+        path=["product_category", "product_subcategory"],
+        values="revenue",
+        color_discrete_map=au.CATEGORY_COLORS,
+        template="plotly_dark",
+    )
+    fig.update_layout(
+        height=400, showlegend=False,
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Inter, sans-serif"),
+    )
+    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+
+
 def page_ai_query(df):
     st.markdown("""
     <div class="hero-header">
@@ -489,10 +497,9 @@ def page_ai_query(df):
     </div>
     """, unsafe_allow_html=True)
 
-    from data_layer import get_column_descriptions, resolve_filter, query_enriched, _ALLOWED_FILTER_COLUMNS
+    import ai_agent
     from llm_provider import get_provider
     from config import LLM_PROVIDER
-    import json
 
     col1, col2 = st.columns([3, 1])
     with col2:
@@ -503,15 +510,14 @@ def page_ai_query(df):
             key="llm_provider_choice",
         )
 
-    col_descs = get_column_descriptions()
-    allowed_cols = sorted(_ALLOWED_FILTER_COLUMNS)
-
-    # Example questions
+    # Example questions — includes no_match cases to demonstrate the decline behavior
     examples = [
-        "Show me completed orders from the South region",
-        "What are Electronics orders in 2025?",
-        "Show all pending and cancelled orders",
-        "Revenue from Clothing in the West region",
+        "What is our total revenue?",
+        "How many orders have we received?",
+        "Show me revenue by region",
+        "What is the refund rate?",
+        "What's the weather today?",           # no_match: not a business metric
+        "Tell me a joke",                       # no_match: not a business metric
     ]
 
     with st.expander("💡 Example questions", expanded=False):
@@ -533,133 +539,54 @@ def page_ai_query(df):
             st.stop()
 
         with st.spinner("Thinking..."):
-            system_prompt = f"""You are a data analytics assistant. Given a user question, extract filter conditions
-and return ONLY a valid JSON object (no markdown, no explanation) with this structure:
-
-{{
-  "filters": {{
-    "column_name": "value"   // scalar equality
-    // OR: "column_name": [">", 2024]  // operator + value
-    // OR: "column_name": ["val1", "val2"]  // IN list
-  }},
-  "explanation": "one sentence describing what data you are returning"
-}}
-
-Allowed filter columns (only use these, no others): {allowed_cols}
-
-Column descriptions:
-{json.dumps({k: v for k, v in col_descs.items() if k in _ALLOWED_FILTER_COLUMNS}, indent=2)}
-
-Rules:
-- Only use columns from the allowed list. Never use columns outside this list.
-- All filter values must be valid values that would exist in the data.
-- order_status values: completed, cancelled, returned, pending
-- customer_region values: North, South, East, West
-- product_category values: Electronics, Clothing, Home & Kitchen, Books, Sports
-- payment_method values: credit_card, debit_card, upi, net_banking, cod
-- order_year: integer year (2023, 2024, 2025, 2026)
-- If no filter applies, return {{"filters": {{}}, "explanation": "..."}}
-"""
-
             try:
                 provider = get_provider(provider_choice)
-                raw = provider.generate(question, system_prompt=system_prompt)
-
-                # Strip markdown code fences if present
-                raw_clean = raw.strip()
-                if raw_clean.startswith("```"):
-                    raw_clean = raw_clean.split("```")[1]
-                    if raw_clean.startswith("json"):
-                        raw_clean = raw_clean[4:]
-                    raw_clean = raw_clean.strip()
-
-                parsed = json.loads(raw_clean)
-                filters = parsed.get("filters", {})
-                explanation = parsed.get("explanation", "")
-
-                # Convert operator lists from JSON to tuples
-                safe_filters = {}
-                for col, spec in filters.items():
-                    if isinstance(spec, list) and len(spec) == 2 and isinstance(spec[0], str) and spec[0] in (">", "<", ">=", "<=", "=", "!="):
-                        safe_filters[col] = (spec[0], spec[1])
-                    else:
-                        safe_filters[col] = spec
-
-                result_df = query_enriched(filters=safe_filters if safe_filters else None)
-
-                # Store in session_state so results survive Streamlit reruns
-                st.session_state["ai_last_result"] = {
-                    "explanation": explanation,
-                    "safe_filters": safe_filters,
-                    "result_df": result_df,
-                }
-
-            except ConnectionError as e:
-                st.error(f"**Ollama not running.** Start it with: `ollama serve`\n\n{e}")
-                st.stop()
-            except ValueError as e:
-                st.error(f"**Filter validation failed** (possible LLM hallucination): {e}")
-                st.stop()
-            except json.JSONDecodeError:
-                st.error(f"LLM returned invalid JSON. Raw response:\n```\n{raw}\n```")
-                st.stop()
+                result = ai_agent.ask(question, provider)
+                st.session_state["ai_last_result"] = result
             except Exception as e:
-                st.error(f"Error: {e}")
+                st.error(f"Unexpected error: {e}")
                 st.stop()
 
     # ── Results panel — rendered from session_state so it survives reruns ──
     last = st.session_state.get("ai_last_result")
     if last:
-        explanation  = last["explanation"]
-        safe_filters = last["safe_filters"]
-        result_df    = last["result_df"]
+        answer       = last.get("answer", "")
+        metric_used  = last.get("metric_used")
+        confidence   = last.get("confidence", "n/a")
+        caveat       = last.get("caveat")
+        filters_used = last.get("filters_used", {})
 
-        st.success(f"✅ {explanation}")
+        # No-match case: metric_used is None → decline gracefully, no data table
+        if metric_used is None:
+            st.info("🤔 I don't have a defined metric for that question yet.")
+        else:
+            st.success(f"✅ {answer}")
 
-        if safe_filters:
+        # Metric badge
+        if metric_used:
+            st.markdown(f"**Metric used:** `{metric_used}`")
+
+        # Confidence badge — green for high, yellow for low
+        if confidence == "high":
+            st.markdown("🟢 **Confidence:** high")
+        elif confidence == "low":
+            st.markdown("🟡 **Confidence:** low")
+
+        # Caveat — always visible, never hidden in an expander
+        if caveat:
+            st.warning(f"⚠️ {caveat}")
+
+        # Applied filters — sourced from ai_agent.ask() filters_used
+        if filters_used:
             st.markdown("**Applied filters:**")
-            filter_cols = st.columns(len(safe_filters))
-            for i, (col_name, val) in enumerate(safe_filters.items()):
+            filter_cols = st.columns(len(filters_used))
+            for i, (col_name, val) in enumerate(filters_used.items()):
                 filter_cols[i].metric(col_name, str(val))
 
-        st.markdown(f"**{len(result_df):,} rows returned**")
 
-        if not result_df.empty:
-            display_cols = [
-                "order_id", "order_date", "order_status", "customer_region",
-                "product_name", "product_category", "quantity", "line_total", "line_profit",
-            ]
-            show_cols = [c for c in display_cols if c in result_df.columns]
-            st.dataframe(
-                result_df[show_cols].head(200).rename(columns={
-                    "order_id": "Order ID", "order_date": "Date",
-                    "order_status": "Status", "customer_region": "Region",
-                    "product_name": "Product", "product_category": "Category",
-                    "quantity": "Qty", "line_total": "Revenue", "line_profit": "Profit",
-                }),
-                use_container_width=True,
-                hide_index=True,
-            )
-
-            # Quick summary chart
-            if "product_category" in result_df.columns and len(result_df) > 0:
-                cat_summary = result_df.groupby("product_category")["line_total"].sum().reset_index()
-                if len(cat_summary) > 1:
-                    import plotly.express as px
-                    fig = px.bar(
-                        cat_summary, x="product_category", y="line_total",
-                        color="product_category",
-                        color_discrete_map=au.CATEGORY_COLORS,
-                        template="plotly_dark",
-                        labels={"product_category": "Category", "line_total": "Revenue (₹)"},
-                    )
-                    fig.update_layout(
-                        height=320, showlegend=False,
-                        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
-                        font=dict(family="Inter, sans-serif"),
-                    )
-                    st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
-        else:
+def page_forecast(df):
+    st.markdown("""
+    <div class="hero-header">
       <p class="hero-title">🔮 Revenue Forecasting</p>
       <p class="hero-subtitle">Prophet time-series model trained on historical monthly revenue</p>
     </div>

@@ -1,5 +1,10 @@
 import os
 from pathlib import Path
+from dotenv import load_dotenv
+
+# Load .env file if it exists (local dev). In production, real env vars
+# take precedence — load_dotenv() does NOT override existing env vars.
+load_dotenv()
 
 BASE_DIR = Path(__file__).resolve().parent
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "ecommerce.db"))

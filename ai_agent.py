@@ -41,7 +41,9 @@ def select_metric(question: str, provider: LLMProvider) -> MetricSelection:
     )
     prompt = f"Available metrics:\n{json.dumps(catalog, indent=2)}\n\nQuestion: {question}"
 
-    raw = provider.generate(prompt, system_prompt=system_prompt)
+    # Low temperature (0.1) for deterministic metric routing — the same
+    # question must always route to the same metric, no randomness.
+    raw = provider.generate(prompt, system_prompt=system_prompt, temperature=0.1)
 
     try:
         data = json.loads(raw)
@@ -118,7 +120,6 @@ class Explanation(BaseModel):
 
 def explain(question: str, metric_name: str, result, provider: LLMProvider) -> Explanation:
     safe_result = scrub_results(result)
-    low_confidence = isinstance(safe_result, (int, float)) and False  # extend as needed
     is_small_series = hasattr(safe_result, "__len__") and len(safe_result) < 3
 
     system_prompt = (
@@ -131,7 +132,9 @@ def explain(question: str, metric_name: str, result, provider: LLMProvider) -> E
     )
     prompt = f"Question: {question}\nMetric used: {metric_name}\nResult: {safe_result}"
 
-    raw = provider.generate(prompt, system_prompt=system_prompt)
+    # Higher temperature (0.7) for explain() — natural, varied phrasing
+    # is fine here, the metric routing decision is already locked in.
+    raw = provider.generate(prompt, system_prompt=system_prompt, temperature=0.7)
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
@@ -156,8 +159,11 @@ def ask(question: str, provider: LLMProvider) -> dict:
             "metric_used": None,
             "confidence": "n/a",
             "caveat": "No matching metric in the allowlist.",
+            "filters_used": selection.filters,
         }
 
     result = run_metric(selection.metric_name, selection.filters)
     explanation = explain(question, selection.metric_name, result, provider)
-    return explanation.model_dump()
+    out = explanation.model_dump()
+    out["filters_used"] = selection.filters
+    return out
