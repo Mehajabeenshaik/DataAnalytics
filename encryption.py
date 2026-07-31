@@ -7,6 +7,12 @@ from config import DB_ENCRYPTION_KEY, BASE_DIR
 
 
 def _get_or_create_key() -> bytes:
+    """Return the Fernet encryption key, creating and persisting one if absent.
+
+    Key resolution order:
+      1. DB_ENCRYPTION_KEY env var (explicit, preferred for production).
+      2. .db.key file in BASE_DIR (auto-generated on first run; must be backed up).
+    """
     if DB_ENCRYPTION_KEY:
         return DB_ENCRYPTION_KEY.encode()
 
@@ -22,6 +28,23 @@ def _get_or_create_key() -> bytes:
 
 
 class EncryptedDB:
+    """Context-manager wrapper that transparently decrypts an on-disk database
+    to a temporary file for use, then re-encrypts and removes the temp file
+    on exit.
+
+    The same class (and the same Fernet key via _get_or_create_key) is used
+    for both ecommerce.db.enc and pii_vault.db.enc so that a single key
+    protects all sensitive data stores — no second key system is introduced.
+
+    Usage::
+
+        with EncryptedDB(encrypted_path="/path/to/file.db.enc") as tmp_db_path:
+            conn = sqlite3.connect(tmp_db_path)
+            ...
+            conn.close()
+        # temp file is deleted and encrypted file is updated on exit
+    """
+
     def __init__(self, encrypted_path: str | None = None):
         self.encrypted_path = encrypted_path or str(BASE_DIR / "ecommerce.db.enc")
         self.fernet = Fernet(_get_or_create_key())
@@ -55,6 +78,8 @@ class EncryptedDB:
                 self._temp_path = None
 
     def encrypt_existing(self, plain_db_path: str):
+        """One-shot: encrypt an existing plaintext SQLite file and write to
+        self.encrypted_path.  The source file is NOT deleted by this method."""
         with open(plain_db_path, "rb") as f:
             raw = f.read()
         encrypted = self.fernet.encrypt(raw)

@@ -318,13 +318,131 @@ def get_connection(db_path: str = DB_PATH) -> sqlite3.Connection:
     return conn
 
 
-def query_enriched(sql_where: str = "", params: tuple = (),
+# ── Filter allowlist ────────────────────────────────────────────────────
+# Only these columns may appear in a WHERE clause built by resolve_filter().
+# Any column not listed here raises ValueError — an LLM cannot inject an
+# arbitrary column name and pivot to a destructive statement.
+_ALLOWED_FILTER_COLUMNS: frozenset[str] = frozenset({
+    "order_status",
+    "payment_method",
+    "customer_region",
+    "order_year",
+    "order_month",
+    "product_category",
+    "product_subcategory",
+    "order_date",
+})
+
+# Allowed SQL comparison operators.  Values are ALWAYS bound via parameterized
+# placeholders — never interpolated into the SQL string.
+_ALLOWED_OPERATORS: frozenset[str] = frozenset({"=", "!=", ">", "<", ">=", "<="})
+
+
+def resolve_filter(filters: dict, db_path: str = DB_PATH) -> tuple[str, list]:
+    """Build a safe, parameterized WHERE clause from a validated filter dict.
+
+    Parameters
+    ----------
+    filters:
+        A dict mapping column names to filter specifications.  Each value is
+        either:
+
+        * A scalar  — treated as an equality check  (``column = ?``).
+        * A 2-tuple ``(operator, value)``  — e.g. ``(">", 2024)``.
+        * A list / tuple of scalars — treated as an IN clause
+          ``column IN (?, ?, …)``.
+        * A dict ``{"BETWEEN": (lo, hi)}`` — treated as
+          ``column BETWEEN ? AND ?``.
+
+    Returns
+    -------
+    (where_clause, params)
+        *where_clause* is a string like ``"order_status = ? AND order_year > ?"``
+        (empty string if *filters* is empty).
+        *params* is the list of values to bind.
+
+    Raises
+    ------
+    ValueError
+        If any column name is not in ``_ALLOWED_FILTER_COLUMNS``.
+    ValueError
+        If an operator is not in ``_ALLOWED_OPERATORS``.
+    """
+    clauses: list[str] = []
+    params: list = []
+
+    for column, spec in filters.items():
+        if column not in _ALLOWED_FILTER_COLUMNS:
+            raise ValueError(
+                f"Column '{column}' is not in the filter allowlist. "
+                f"Allowed columns: {sorted(_ALLOWED_FILTER_COLUMNS)}"
+            )
+
+        if isinstance(spec, dict) and "BETWEEN" in spec:
+            # {"BETWEEN": (lo, hi)}
+            lo, hi = spec["BETWEEN"]
+            clauses.append(f"{column} BETWEEN ? AND ?")
+            params.extend([lo, hi])
+
+        elif isinstance(spec, (list, tuple)) and not (
+            len(spec) == 2 and isinstance(spec[0], str) and spec[0] in _ALLOWED_OPERATORS
+        ):
+            # List of scalars → IN clause
+            placeholders = ",".join(["?"] * len(spec))
+            clauses.append(f"{column} IN ({placeholders})")
+            params.extend(spec)
+
+        elif isinstance(spec, (list, tuple)) and len(spec) == 2 and isinstance(spec[0], str):
+            # (operator, value) pair
+            operator, value = spec
+            if operator not in _ALLOWED_OPERATORS:
+                raise ValueError(
+                    f"Operator '{operator}' is not allowed. "
+                    f"Allowed operators: {sorted(_ALLOWED_OPERATORS)}"
+                )
+            clauses.append(f"{column} {operator} ?")
+            params.append(value)
+
+        else:
+            # Scalar → equality
+            clauses.append(f"{column} = ?")
+            params.append(spec)
+
+    where_clause = " AND ".join(clauses)
+    return where_clause, params
+
+
+def query_enriched(filters: dict | None = None,
                    db_path: str = DB_PATH) -> pd.DataFrame:
-    """Run a query against orders_enriched and return a DataFrame."""
-    conn = sqlite3.connect(db_path)
+    """Return a DataFrame from orders_enriched, optionally filtered.
+
+    Parameters
+    ----------
+    filters:
+        Optional dict passed to :func:`resolve_filter`.  Only columns in the
+        allowlist are accepted; anything else raises ``ValueError``.
+        Pass ``None`` (default) or an empty dict to return all rows.
+    db_path:
+        Path to the SQLite database.
+
+    Notes
+    -----
+    The previous ``sql_where: str`` parameter has been **removed**.  Accepting
+    a raw SQL fragment from callers (especially LLM output) is a SQL-injection
+    risk.  All filter conditions must go through :func:`resolve_filter` which
+    validates column names against an allowlist and binds values as
+    parameterized placeholders — the SQL text never contains a user-supplied
+    value.
+    """
     base = "SELECT * FROM orders_enriched"
-    if sql_where:
-        base += f" WHERE {sql_where}"
+    params: list = []
+
+    if filters:
+        where_clause, params = resolve_filter(filters, db_path=db_path)
+        if where_clause:
+            base = f"{base} WHERE {where_clause}"
+
+    conn = sqlite3.connect(db_path)
     df = pd.read_sql_query(base, conn, params=params)
     conn.close()
     return df
