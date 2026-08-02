@@ -34,7 +34,7 @@ def main():
     for i, acc in enumerate(accuracies, 1):
         print(f"  Run {i}: {acc:.1f}%")
     print(f"  Range: {min(accuracies):.1f}% - {max(accuracies):.1f}%")
-    print(f"  Stable: {'YES ✅' if max(accuracies) - min(accuracies) == 0 else 'NO ❌'}")
+    print(f"  Stable: {'YES' if max(accuracies) - min(accuracies) == 0 else 'NO'}")
     print(f"{'='*70}")
 
 

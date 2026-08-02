@@ -17,6 +17,10 @@ PII_VAULT_ENCRYPTED_PATH = os.getenv("PII_VAULT_ENCRYPTED_PATH", str(BASE_DIR / 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+# Default local model: nemotron-3-nano:4b (Nemotron 3 Nano, 4B params).
+# Fallback/alternative: qwen2.5-coder:14b - larger, code-tuned, more accurate
+# on structured JSON output but needs more VRAM. Use if Nemotron underperforms:
+#   OLLAMA_MODEL=qwen2.5-coder:14b
 # Model choice matters significantly for structured reasoning tasks like SQL/filter
 # generation. Larger code-tuned models (e.g. qwen2.5-coder:14b) produce far more
 # accurate column names, operator choices, and parameterized WHERE clauses than

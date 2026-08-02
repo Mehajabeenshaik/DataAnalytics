@@ -1,0 +1,415 @@
+﻿
+######################################################################
+#  RUN 1 OF 3
+######################################################################
+
+======================================================================
+  Golden-Set Evaluation ù agent_phase2.ask()
+  Provider: ollama/llama3:latest
+  Questions: 18
+  Data: 100 rows x 7 cols
+  Metrics: 23 available
+======================================================================
+
+[01/18] Q: What is the total revenue?
+WARNING: presidio-analyzer not installed. Run: pip install presidio-analyzer presidio-anonymizer
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[02/18] Q: How much revenue have we made?
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[03/18] Q: What are our total sales?
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[04/18] Q: How many orders have we received?
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[05/18] Q: What is the order count?
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[06/18] Q: Show me revenue by region
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[07/18] Q: Revenue per region
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[08/18] Q: Show me revenue by category
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[09/18] Q: Category breakdown of revenue
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[10/18] Q: Describe the data
+       Expected: stats_tool
+       Actual:   single_metric
+       PASS
+
+[11/18] Q: What are the summary statistics?
+       Expected: stats_tool
+       Actual:   no_match
+       FAIL
+
+[12/18] Q: Show me value counts for region
+       Expected: stats_tool
+       Actual:   no_match
+       FAIL
+
+[13/18] Q: What is the correlation between revenue and quantity?
+       Expected: stats_tool
+       Actual:   stats_tool
+       PASS
+
+[14/18] Q: What's the weather today?
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+[15/18] Q: Tell me a joke
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+[16/18] Q: What is the meaning of life?
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+[17/18] Q: Who won the World Cup?
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+[18/18] Q: What's the stock price of Apple?
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+======================================================================
+  RESULTS
+======================================================================
+  Total:     18
+  Passed:    16
+  Failed:    2
+  Accuracy:  88.9%
+
+  Failures:
+    - Q: What are the summary statistics?
+      Expected: stats_tool
+      Actual:   no_match
+      Answer:   I don't have a reliable metric or tool that answers this question with the current data.
+
+    - Q: Show me value counts for region
+      Expected: stats_tool
+      Actual:   no_match
+      Answer:   I don't have a reliable metric or tool that answers this question with the current data.
+
+======================================================================
+
+######################################################################
+#  RUN 2 OF 3
+######################################################################
+
+======================================================================
+  Golden-Set Evaluation ù agent_phase2.ask()
+  Provider: ollama/llama3:latest
+  Questions: 18
+  Data: 100 rows x 7 cols
+  Metrics: 23 available
+======================================================================
+
+[01/18] Q: What is the total revenue?
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[02/18] Q: How much revenue have we made?
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[03/18] Q: What are our total sales?
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[04/18] Q: How many orders have we received?
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[05/18] Q: What is the order count?
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[06/18] Q: Show me revenue by region
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[07/18] Q: Revenue per region
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[08/18] Q: Show me revenue by category
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[09/18] Q: Category breakdown of revenue
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[10/18] Q: Describe the data
+       Expected: stats_tool
+       Actual:   single_metric
+       PASS
+
+[11/18] Q: What are the summary statistics?
+       Expected: stats_tool
+       Actual:   no_match
+       FAIL
+
+[12/18] Q: Show me value counts for region
+       Expected: stats_tool
+       Actual:   no_match
+       FAIL
+
+[13/18] Q: What is the correlation between revenue and quantity?
+       Expected: stats_tool
+       Actual:   stats_tool
+       PASS
+
+[14/18] Q: What's the weather today?
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+[15/18] Q: Tell me a joke
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+[16/18] Q: What is the meaning of life?
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+[17/18] Q: Who won the World Cup?
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+[18/18] Q: What's the stock price of Apple?
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+======================================================================
+  RESULTS
+======================================================================
+  Total:     18
+  Passed:    16
+  Failed:    2
+  Accuracy:  88.9%
+
+  Failures:
+    - Q: What are the summary statistics?
+      Expected: stats_tool
+      Actual:   no_match
+      Answer:   I don't have a reliable metric or tool that answers this question with the current data.
+
+    - Q: Show me value counts for region
+      Expected: stats_tool
+      Actual:   no_match
+      Answer:   I don't have a reliable metric or tool that answers this question with the current data.
+
+======================================================================
+
+######################################################################
+#  RUN 3 OF 3
+######################################################################
+
+======================================================================
+  Golden-Set Evaluation ù agent_phase2.ask()
+  Provider: ollama/llama3:latest
+  Questions: 18
+  Data: 100 rows x 7 cols
+  Metrics: 23 available
+======================================================================
+
+[01/18] Q: What is the total revenue?
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[02/18] Q: How much revenue have we made?
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[03/18] Q: What are our total sales?
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[04/18] Q: How many orders have we received?
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[05/18] Q: What is the order count?
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[06/18] Q: Show me revenue by region
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[07/18] Q: Revenue per region
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[08/18] Q: Show me revenue by category
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[09/18] Q: Category breakdown of revenue
+       Expected: single_metric
+       Actual:   single_metric
+       PASS
+
+[10/18] Q: Describe the data
+       Expected: stats_tool
+       Actual:   single_metric
+       PASS
+
+[11/18] Q: What are the summary statistics?
+       Expected: stats_tool
+       Actual:   no_match
+       FAIL
+
+[12/18] Q: Show me value counts for region
+       Expected: stats_tool
+       Actual:   no_match
+       FAIL
+
+[13/18] Q: What is the correlation between revenue and quantity?
+       Expected: stats_tool
+       Actual:   stats_tool
+       PASS
+
+[14/18] Q: What's the weather today?
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+[15/18] Q: Tell me a joke
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+[16/18] Q: What is the meaning of life?
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+[17/18] Q: Who won the World Cup?
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+[18/18] Q: What's the stock price of Apple?
+       Expected: no_match
+       Actual:   no_match
+       PASS
+
+======================================================================
+  RESULTS
+======================================================================
+  Total:     18
+  Passed:    16
+  Failed:    2
+  Accuracy:  88.9%
+
+  Failures:
+    - Q: What are the summary statistics?
+      Expected: stats_tool
+      Actual:   no_match
+      Answer:   I don't have a reliable metric or tool that answers this question with the current data.
+
+    - Q: Show me value counts for region
+      Expected: stats_tool
+      Actual:   no_match
+      Answer:   I don't have a reliable metric or tool that answers this question with the current data.
+
+======================================================================
+
+======================================================================
+  STABILITY SUMMARY ù 3 consecutive runs
+======================================================================
+  Run 1: 88.9%
+  Run 2: 88.9%
+  Run 3: 88.9%
+  Range: 88.9% - 88.9%
+python : Traceback (most recent 
+call last):
+At line:1 char:105
++ ... ; $env:LLM_PROVIDER="ollama"; 
+python eval/run_eval_3x.py 2>&1 | 
+Out-F ...
++                                   
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : NotSp 
+   ecified: (Traceback (most recen  
+  t call last)::String) [], Remot   
+ eException
+    + FullyQualifiedErrorId : Nativ 
+   eCommandError
+ 
+  File "C:\Users\bharu\OneDrive\Desk
+top\f6\eval\run_eval_3x.py", line 
+42, in <module>
+    main()
+  File "C:\Users\bharu\OneDrive\Desk
+top\f6\eval\run_eval_3x.py", line 
+37, in main
+    print(f"  Stable: {'YES \u2705' 
+if max(accuracies) - 
+min(accuracies) == 0 else 'NO 
+\u274c'}")
+  File "C:\Users\bharu\AppData\Local
+\Programs\Python\Python312\Lib\encod
+ings\cp1252.py", line 19, in encode
+    return codecs.charmap_encode(inp
+ut,self.errors,encoding_table)[0]
+           ^^^^^^^^^^^^^^^^^^^^^^^^^
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+UnicodeEncodeError: 'charmap' codec 
+can't encode character '\u2705' in 
+position 14: character maps to 
+<undefined>
