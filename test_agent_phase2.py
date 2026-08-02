@@ -5,7 +5,7 @@ Tests cover:
   - Propose-metric: valid proposal, invalid column, invalid agg
   - Execute: metric step, stats step, error handling
   - Synthesize: happy path, small result downgrade, malformed response
-  - ask_phase2: end-to-end happy path, no_match, propose_metric flow
+  - ask: end-to-end happy path, no_match, propose_metric flow
 """
 
 import json
@@ -20,7 +20,7 @@ from agent_phase2 import (
     propose_metric,
     execute_plan,
     synthesize,
-    ask_phase2,
+    ask,
     Plan,
     PlanStep,
     MetricProposal,
@@ -322,9 +322,9 @@ def test_synthesize_malformed_response(ds):
     assert answer["confidence"] == "low"
 
 
-# ── ask_phase2 end-to-end tests ───────────────────────────────────────────
+# ── ask end-to-end tests ───────────────────────────────────────────
 
-def test_ask_phase2_happy_path(ds):
+def test_ask_happy_path(ds):
     metrics = ds.get_metrics()
     first_metric = list(metrics.keys())[0]
     provider = MagicMock()
@@ -344,27 +344,27 @@ def test_ask_phase2_happy_path(ds):
             "lineage": {"metrics_or_tools_used": [first_metric], "filters_applied": {}, "notes": "6 rows"},
         }),
     ]
-    result = ask_phase2("What is the total?", ds, provider)
+    result = ask("What is the total?", ds, provider)
     assert result["plan"]["plan_type"] == "single_metric"
     assert len(result["results"]) == 1
     assert result["results"][0]["error"] is None
     assert result["confidence"] in ("high", "low")
 
 
-def test_ask_phase2_no_match(ds):
+def test_ask_no_match(ds):
     provider = make_mock_provider({
         "can_answer": False,
         "reason": "No match",
         "plan_type": "no_match",
         "steps": [],
     })
-    result = ask_phase2("What's the weather?", ds, provider)
+    result = ask("What's the weather?", ds, provider)
     assert result["plan"]["plan_type"] == "no_match"
     assert result["results"] == []
     assert "don't have a reliable" in result["answer"]
 
 
-def test_ask_phase2_propose_metric(ds):
+def test_ask_propose_metric(ds):
     provider = MagicMock()
     provider.generate.side_effect = [
         json.dumps({
@@ -386,14 +386,14 @@ def test_ask_phase2_propose_metric(ds):
             "risk": "low",
         }),
     ]
-    result = ask_phase2("What is the median revenue?", ds, provider)
+    result = ask("What is the median revenue?", ds, provider)
     assert result["plan"]["plan_type"] == "propose_metric"
     assert "proposal" in result
     assert result["proposal"]["can_propose"] is True
     assert result["proposal"]["column"] == "revenue"
 
 
-def test_ask_phase2_stats_tool(ds):
+def test_ask_stats_tool(ds):
     provider = MagicMock()
     provider.generate.side_effect = [
         json.dumps({
@@ -411,7 +411,7 @@ def test_ask_phase2_stats_tool(ds):
             "lineage": {"metrics_or_tools_used": ["describe"], "filters_applied": {}, "notes": "6 rows"},
         }),
     ]
-    result = ask_phase2("Describe the revenue column", ds, provider)
+    result = ask("Describe the revenue column", ds, provider)
     assert result["plan"]["plan_type"] == "stats_tool"
     assert len(result["results"]) == 1
     assert result["results"][0]["target"] == "describe"

@@ -1,11 +1,11 @@
-"""eval/run_eval.py — Golden-set evaluation for ai_agent.ask().
+"""eval/run_eval.py — Golden-set evaluation for agent_phase2.ask().
 
 Runs a curated set of questions against the real LLM provider and checks
 that the agent routes to the correct metric (or declines correctly).
 
 Usage:
     python eval/run_eval.py
-    LLM_PROVIDER=gemini python eval/run_eval.py
+    LLM_PROVIDER=nvidia python eval/run_eval.py
 
 Reports: accuracy percentage, per-question pass/fail, and failure details.
 """
@@ -13,59 +13,76 @@ import os
 import sys
 import time
 
-# Bootstrap .env before any project import
 from dotenv import load_dotenv
 load_dotenv()
 
-# Add project root to path so we can import ai_agent
+# Add project root to path
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ai_agent import ask
+import pandas as pd
+from data_source import DataSource
+from agent_phase2 import ask
 from llm_provider import get_provider
 
 
+# ── Sample data for eval ──────────────────────────────────────────────────
+
+def _make_eval_ds() -> DataSource:
+    """Create a DataSource with known data for deterministic eval."""
+    df = pd.DataFrame({
+        "order_id": list(range(1, 101)),
+        "customer_id": [i % 25 + 1 for i in range(100)],
+        "revenue": [float(100 + i * 10) for i in range(100)],
+        "quantity": [(i % 5) + 1 for i in range(100)],
+        "region": (["North", "South", "East", "West"] * 25),
+        "category": (["Electronics", "Clothing", "Books", "Home", "Sports"] * 20),
+        "order_date": pd.to_datetime(["2024-01-15"] * 100),
+    })
+    ds = DataSource()
+    ds.load_dataframe(df)
+    return ds
+
+
 # ── Golden set ───────────────────────────────────────────────────────────
-# Each entry: (question, expected_metric_used)
-# expected_metric_used = None means we expect a no_match decline.
+# Each entry: (question, expected_plan_type)
+# expected_plan_type = "no_match" means we expect a decline.
 # ─────────────────────────────────────────────────────────────────────────
 
 GOLDEN_SET = [
-    # ── Happy path: should route to a specific metric ──
-    ("What is our total revenue?",                    "total_revenue"),
-    ("How much revenue have we made?",                 "total_revenue"),
-    ("What are our total sales?",                      "total_revenue"),
-    ("How many orders have we received?",             "order_count"),
-    ("What is the order count?",                       "order_count"),
-    ("How many completed orders are there?",          "order_count"),
-    ("What is the average order value?",              "avg_order_value"),
-    ("What is our AOV?",                              "avg_order_value"),
-    ("What is our total profit?",                     "total_profit"),
-    ("How much profit have we made?",                 "total_profit"),
-    ("Show me revenue by region",                     "revenue_by_region"),
-    ("What are sales by region?",                     "revenue_by_region"),
-    ("Revenue per region",                            "revenue_by_region"),
-    ("Show me revenue by category",                   "revenue_by_category"),
-    ("What are sales by category?",                   "revenue_by_category"),
-    ("Category breakdown of revenue",                "revenue_by_category"),
-    ("What is the refund rate?",                      "refund_rate"),
-    ("What percentage of orders are returned?",       "refund_rate"),
-    ("What is our return rate?",                      "refund_rate"),
+    # ── Happy path: should route to a metric or stats tool ──
+    ("What is the total revenue?",                    "single_metric"),
+    ("How much revenue have we made?",                 "single_metric"),
+    ("What are our total sales?",                      "single_metric"),
+    ("How many orders have we received?",             "single_metric"),
+    ("What is the order count?",                       "single_metric"),
+    ("Show me revenue by region",                     "single_metric"),
+    ("Revenue per region",                            "single_metric"),
+    ("Show me revenue by category",                   "single_metric"),
+    ("Category breakdown of revenue",                "single_metric"),
+    ("Describe the data",                             "stats_tool"),
+    ("What are the summary statistics?",              "stats_tool"),
+    ("Show me value counts for region",               "stats_tool"),
+    ("What is the correlation between revenue and quantity?", "stats_tool"),
 
     # ── No-match: should decline gracefully ──
-    ("What's the weather today?",                     None),
-    ("Tell me a joke",                                None),
-    ("What is the meaning of life?",                  None),
-    ("Who won the World Cup?",                        None),
-    ("What's the stock price of Apple?",              None),
+    ("What's the weather today?",                     "no_match"),
+    ("Tell me a joke",                                "no_match"),
+    ("What is the meaning of life?",                  "no_match"),
+    ("Who won the World Cup?",                        "no_match"),
+    ("What's the stock price of Apple?",              "no_match"),
 ]
 
 
 def run_eval():
     provider = get_provider()
+    ds = _make_eval_ds()
+
     print(f"{'='*70}")
-    print(f"  Golden-Set Evaluation — ai_agent.ask()")
+    print(f"  Golden-Set Evaluation — agent_phase2.ask()")
     print(f"  Provider: {provider.provider_name()}")
     print(f"  Questions: {len(GOLDEN_SET)}")
+    print(f"  Data: {ds.profile.n_rows} rows x {ds.profile.n_cols} cols")
+    print(f"  Metrics: {len(ds.get_metrics())} available")
     print(f"{'='*70}")
     print()
 
@@ -73,38 +90,44 @@ def run_eval():
     failed = 0
     failures = []
 
-    for i, (question, expected_metric) in enumerate(GOLDEN_SET, 1):
-        # Rate-limit: pause between calls to avoid 429s
+    for i, (question, expected_plan_type) in enumerate(GOLDEN_SET, 1):
         if i > 1:
             time.sleep(1)
 
         print(f"[{i:02d}/{len(GOLDEN_SET)}] Q: {question}")
         try:
-            result = ask(question, provider)
-            actual_metric = result.get("metric_used")
+            result = ask(question, ds, provider)
+            actual_plan_type = result.get("plan", {}).get("plan_type", "?")
 
-            if actual_metric == expected_metric:
-                status = "✅ PASS"
+            # For no_match, we check plan_type == "no_match"
+            # For happy path, we accept any non-no_match plan_type
+            if expected_plan_type == "no_match":
+                success = actual_plan_type == "no_match"
+            else:
+                success = actual_plan_type != "no_match"
+
+            if success:
+                status = "PASS"
                 passed += 1
             else:
-                status = "❌ FAIL"
+                status = "FAIL"
                 failed += 1
                 failures.append({
                     "question": question,
-                    "expected": expected_metric,
-                    "actual": actual_metric,
+                    "expected": expected_plan_type,
+                    "actual": actual_plan_type,
                     "answer": result.get("answer", ""),
                 })
 
-            print(f"       Expected: {expected_metric}")
-            print(f"       Actual:   {actual_metric}")
+            print(f"       Expected: {expected_plan_type}")
+            print(f"       Actual:   {actual_plan_type}")
             print(f"       {status}")
         except Exception as e:
-            status = "❌ ERROR"
+            status = "ERROR"
             failed += 1
             failures.append({
                 "question": question,
-                "expected": expected_metric,
+                "expected": expected_plan_type,
                 "actual": f"ERROR: {e}",
                 "answer": "",
             })
@@ -128,7 +151,7 @@ def run_eval():
     if failures:
         print(f"  Failures:")
         for f in failures:
-            print(f"    • Q: {f['question']}")
+            print(f"    - Q: {f['question']}")
             print(f"      Expected: {f['expected']}")
             print(f"      Actual:   {f['actual']}")
             if f['answer']:

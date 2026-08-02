@@ -6,12 +6,14 @@ Extends Phase 1 with:
   - 6 deterministic statistical tools (stats_tools.py)
   - A propose-metric flow (human approval required)
   - A synthesizer that produces grounded answers with confidence + lineage
+  - PII defense-in-depth: result scrubbing via Presidio before synthesis
 
 Safety model is fully preserved:
   - LLM only picks from the metric catalog and allowed tool names
   - Filters are stripped against the allowlist
   - All column validation happens in the deterministic layer
   - No raw SQL or Python from the LLM is ever executed
+  - PII is masked at load time (data_source.py) and scrubbed from results
 """
 
 from __future__ import annotations
@@ -27,6 +29,40 @@ from metric_factory import get_metric_catalog_for_llm
 from agent_core import run_metric
 from stats_tools import ALLOWED_STATS_TOOLS, VALID_TOOL_NAMES, run_stats_tool
 from llm_provider import LLMProvider
+
+
+# ── PII defense-in-depth ──────────────────────────────────────────────────
+
+def _scrub_pii_from_results(results: list[dict]) -> list[dict]:
+    """Defense-in-depth: run Presidio on any string values in results.
+
+    This is a second layer of PII protection — the primary layer is
+    data_source.py's _detect_and_mask_pii() which masks at load time.
+    This function catches any PII that might slip through in result
+    values (e.g. from a stats tool that returns string columns).
+    """
+    try:
+        from pii_masker import PIIMasker
+        masker = PIIMasker()
+    except ImportError:
+        return results
+
+    for r in results:
+        val = r.get("result")
+        if isinstance(val, str):
+            detections = masker.scan_text(val)
+            if detections:
+                r["result"] = "[REDACTED - possible PII detected]"
+        elif isinstance(val, pd.DataFrame):
+            for col in val.columns:
+                if val[col].dtype == "object":
+                    for idx in val.index:
+                        cell = val.at[idx, col]
+                        if isinstance(cell, str):
+                            detections = masker.scan_text(cell)
+                            if detections:
+                                val.at[idx, col] = "[REDACTED - possible PII detected]"
+    return results
 
 
 # ── Prompts ───────────────────────────────────────────────────────────────
@@ -128,7 +164,7 @@ Rules:
 
 class PlanStep(BaseModel):
     step_id: int = 1
-    action: str = "run_metric"  # "run_metric" | "run_stats"
+    action: str = "run_metric"
     target: str = ""
     filters: dict = {}
     args: dict = {}
@@ -137,7 +173,7 @@ class PlanStep(BaseModel):
 class Plan(BaseModel):
     can_answer: bool = False
     reason: str = ""
-    plan_type: str = "no_match"  # single_metric | stats_tool | multi_step | propose_metric | no_match
+    plan_type: str = "no_match"
     steps: list[PlanStep] = []
 
 
@@ -161,24 +197,11 @@ def plan(
     ds: DataSource,
     provider: LLMProvider,
 ) -> Plan:
-    """Ask the LLM to produce a plan for answering the question.
-
-    The LLM sees only:
-      - Metric names + synonyms + descriptions (no SQL logic)
-      - Stats tool names + descriptions (no implementation)
-      - Schema card (column names + types + examples)
-      - Allowed filter column names
-
-    The returned Plan is validated: metric names must exist in the catalog,
-    tool names must be in the allowed set, and filter keys are stripped
-    against the allowlist.
-    """
     metrics = ds.get_metrics()
     catalog = get_metric_catalog_for_llm(metrics)
     schema_card = ds.get_schema_card()
     allowed_filters = ds.allowed_filter_columns
 
-    # Build the tools catalog for the prompt
     tools_catalog = [
         {"name": t["name"], "description": t["description"], "args": t["args"]}
         for t in ALLOWED_STATS_TOOLS
@@ -200,16 +223,12 @@ def plan(
     except (json.JSONDecodeError, ValidationError):
         return Plan(can_answer=False, reason="Malformed planner response", plan_type="no_match")
 
-    # ── Safety: validate every step ──────────────────────────────────
     metric_names = set(metrics.keys())
     for step in the_plan.steps:
-        # Validate action
         if step.action not in ("run_metric", "run_stats"):
-            step.action = "run_metric"  # safe default
+            step.action = "run_metric"
 
-        # Validate target
         if step.action == "run_metric" and step.target not in metric_names:
-            # LLM invented a metric name — reject the whole plan
             return Plan(
                 can_answer=False,
                 reason=f"Metric '{step.target}' not in catalog",
@@ -222,29 +241,21 @@ def plan(
                 plan_type="no_match",
             )
 
-        # Strip non-allowlisted filter keys
         step.filters = {
             k: v for k, v in step.filters.items() if k in allowed_filters
         }
 
-    # Cap steps at 3
     the_plan.steps = the_plan.steps[:3]
-
     return the_plan
 
 
-# ── Step 2: Propose-metric (LLM call, only if plan_type == propose_metric) ──
+# ── Step 2: Propose-metric ────────────────────────────────────────────────
 
 def propose_metric(
     question: str,
     ds: DataSource,
     provider: LLMProvider,
 ) -> MetricProposal:
-    """Ask the LLM to propose a new governed metric.
-
-    The proposal is validated: column must exist, agg must be valid.
-    The proposal does NOT enter the live catalog until a human approves it.
-    """
     schema_card = ds.get_schema_card()
     column_names = [c.name for c in ds.profile.columns]
 
@@ -262,7 +273,6 @@ def propose_metric(
     except (json.JSONDecodeError, ValidationError):
         return MetricProposal(can_propose=False, reason="Malformed proposal response")
 
-    # Validate column exists
     if proposal.can_propose:
         if proposal.column not in column_names:
             return MetricProposal(
@@ -286,11 +296,6 @@ def propose_metric(
 # ── Step 3: Execute (deterministic, no LLM) ──────────────────────────────
 
 def execute_plan(the_plan: Plan, ds: DataSource) -> list[dict]:
-    """Execute each step in the plan deterministically.
-
-    Returns a list of result dicts, one per step:
-      [{"step_id": 1, "action": "run_metric", "target": "...", "result": <data>}]
-    """
     results: list[dict] = []
     metrics = ds.get_metrics()
 
@@ -329,12 +334,9 @@ def synthesize(
     results: list[dict],
     provider: LLMProvider,
 ) -> dict:
-    """Ask the LLM to write the final answer grounded in the tool results.
+    # PII defense-in-depth: scrub any PII from results before synthesis
+    results = _scrub_pii_from_results(results)
 
-    The LLM receives the question, the plan, and the raw results.
-    It must not invent numbers — only use what the tools returned.
-    """
-    # Serialize results for the prompt (handle DataFrames, Series, etc.)
     serializable_results = []
     for r in results:
         entry = {
@@ -380,7 +382,6 @@ def synthesize(
             },
         }
 
-    # Safety: downgrade confidence for small result sets
     for r in results:
         val = r.get("result")
         if hasattr(val, "__len__") and not isinstance(val, (str, dict)) and len(val) < 3:
@@ -395,22 +396,11 @@ def synthesize(
 
 # ── Top-level entrypoint ─────────────────────────────────────────────────
 
-def ask_phase2(question: str, ds: DataSource, provider: LLMProvider) -> dict:
-    """Phase 2 agent loop: plan → execute → synthesize.
+def ask(question: str, ds: DataSource, provider: LLMProvider) -> dict:
+    """Phase 2 agent loop: plan -> execute -> synthesize.
 
-    Returns a dict with:
-      - answer: plain-English explanation
-      - confidence: "high" | "low"
-      - caveats: list of strings
-      - lineage: dict with tools/filters used
-      - plan: the plan that was executed
-      - results: raw step results
-      - proposal: (only if plan_type == "propose_metric") the metric proposal
-
-    If the plan is no_match, returns an honest decline.
-    If the plan is propose_metric, returns the proposal for human approval.
+    This is the main entrypoint for the governed agent.
     """
-    # Step 1: Plan
     the_plan = plan(question, ds, provider)
 
     if not the_plan.can_answer or the_plan.plan_type == "no_match":
@@ -423,7 +413,6 @@ def ask_phase2(question: str, ds: DataSource, provider: LLMProvider) -> dict:
             "results": [],
         }
 
-    # If propose_metric, generate a proposal (does not execute anything)
     if the_plan.plan_type == "propose_metric":
         proposal = propose_metric(question, ds, provider)
         return {
@@ -440,10 +429,7 @@ def ask_phase2(question: str, ds: DataSource, provider: LLMProvider) -> dict:
             "proposal": proposal.model_dump(),
         }
 
-    # Step 2: Execute
     results = execute_plan(the_plan, ds)
-
-    # Step 3: Synthesize
     answer = synthesize(question, the_plan, results, provider)
 
     return {
