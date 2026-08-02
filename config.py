@@ -22,7 +22,7 @@ OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
 # accurate column names, operator choices, and parameterized WHERE clauses than
 # smaller general-purpose models. Accuracy on ambiguous natural-language queries
 # degrades sharply below ~7B parameters or without code fine-tuning.
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5-coder:14b")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "nemotron-3-nano:4b")
 
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "300"))
 

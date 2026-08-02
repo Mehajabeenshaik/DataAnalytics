@@ -726,6 +726,15 @@ def page_bring_your_data():
         # ── Ask questions ──
         st.markdown('<div class="section-heading">Ask a Question</div>', unsafe_allow_html=True)
 
+        # Phase toggle: Phase 1 (fast) vs Phase 2 (planner + stats tools)
+        agent_mode = st.radio(
+            "Agent mode",
+            ["Phase 1 — Fast metric router", "Phase 2 — Planner + stats tools"],
+            horizontal=True,
+            key="byod_agent_mode",
+        )
+        use_phase2 = "Phase 2" in agent_mode
+
         provider_choice = st.selectbox(
             "LLM Provider",
             ["ollama", "gemini"],
@@ -735,7 +744,7 @@ def page_bring_your_data():
 
         question = st.text_area(
             "Your question",
-            placeholder="e.g. What is the total revenue? Show me revenue by region.",
+            placeholder="e.g. What is the total revenue? Show me revenue by region. Describe the data.",
             height=80,
             key="byod_question",
         )
@@ -745,50 +754,62 @@ def page_bring_your_data():
                 st.warning("Please enter a question.")
                 st.stop()
 
-            with st.spinner("Analyzing..."):
+            with st.spinner("Analyzing..." if not use_phase2 else "Planning → Executing → Synthesizing..."):
                 try:
                     provider = get_provider(provider_choice)
-                    result = ask(question, ds, provider)
+                    if use_phase2:
+                        from agent_phase2 import ask_phase2
+                        result = ask_phase2(question, ds, provider)
+                    else:
+                        result = ask(question, ds, provider)
                     st.session_state["byod_last_result"] = result
+                    st.session_state["byod_use_phase2"] = use_phase2
                 except Exception as e:
                     st.error(f"Error: {e}")
                     st.stop()
 
         # ── Results ──
         last = st.session_state.get("byod_last_result")
+        was_phase2 = st.session_state.get("byod_use_phase2", False)
+
         if last:
-            if last.get("metric_used") is None:
-                st.info(f"🤔 {last['answer']}")
+            # Phase 2 results have a different structure (plan, results, lineage)
+            if was_phase2 and "plan" in last:
+                _render_phase2_result(last, ds)
             else:
-                st.success(f"✅ {last['answer']}")
-
-            if last.get("metric_used"):
-                st.markdown(f"**Metric:** `{last['metric_used']}`")
-
-            confidence = last.get("confidence", "n/a")
-            if confidence == "high":
-                st.markdown("🟢 **Confidence:** high")
-            elif confidence == "low":
-                st.markdown("🟡 **Confidence:** low")
-
-            if last.get("caveat"):
-                st.warning(f"⚠️ {last['caveat']}")
-
-            if last.get("filters_used"):
-                st.markdown("**Filters:**")
-                for k, v in last["filters_used"].items():
-                    st.markdown(f"- `{k}` = `{v}`")
-
-            if last.get("result") is not None:
-                st.markdown('<div class="section-heading">Raw Result</div>', unsafe_allow_html=True)
-                import pandas as pd
-                result = last["result"]
-                if isinstance(result, pd.Series):
-                    st.dataframe(result.reset_index(), use_container_width=True, hide_index=True)
-                elif isinstance(result, (int, float)):
-                    st.metric("Result", f"{result:,.2f}" if isinstance(result, float) else str(result))
+                # Phase 1 result rendering (original)
+                if last.get("metric_used") is None:
+                    st.info(f"🤔 {last['answer']}")
                 else:
-                    st.write(result)
+                    st.success(f"✅ {last['answer']}")
+
+                if last.get("metric_used"):
+                    st.markdown(f"**Metric:** `{last['metric_used']}`")
+
+                confidence = last.get("confidence", "n/a")
+                if confidence == "high":
+                    st.markdown("🟢 **Confidence:** high")
+                elif confidence == "low":
+                    st.markdown("🟡 **Confidence:** low")
+
+                if last.get("caveat"):
+                    st.warning(f"⚠️ {last['caveat']}")
+
+                if last.get("filters_used"):
+                    st.markdown("**Filters:**")
+                    for k, v in last["filters_used"].items():
+                        st.markdown(f"- `{k}` = `{v}`")
+
+                if last.get("result") is not None:
+                    st.markdown('<div class="section-heading">Raw Result</div>', unsafe_allow_html=True)
+                    import pandas as pd
+                    result = last["result"]
+                    if isinstance(result, pd.Series):
+                        st.dataframe(result.reset_index(), use_container_width=True, hide_index=True)
+                    elif isinstance(result, (int, float)):
+                        st.metric("Result", f"{result:,.2f}" if isinstance(result, float) else str(result))
+                    else:
+                        st.write(result)
 
 
 def page_admin(df):
