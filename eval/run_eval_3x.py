@@ -29,7 +29,7 @@ def main():
         accuracies.append(acc)
 
     print(f"\n{'='*70}")
-    print(f"  STABILITY SUMMARY — 3 consecutive runs")
+    print(f"  STABILITY SUMMARY - 3 consecutive runs")
     print(f"{'='*70}")
     for i, acc in enumerate(accuracies, 1):
         print(f"  Run {i}: {acc:.1f}%")

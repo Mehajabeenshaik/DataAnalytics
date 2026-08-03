@@ -78,7 +78,7 @@ def run_eval():
     ds = _make_eval_ds()
 
     print(f"{'='*70}")
-    print(f"  Golden-Set Evaluation — agent_phase2.ask()")
+    print(f"  Golden-Set Evaluation - agent_phase2.ask()")
     print(f"  Provider: {provider.provider_name()}")
     print(f"  Questions: {len(GOLDEN_SET)}")
     print(f"  Data: {ds.profile.n_rows} rows x {ds.profile.n_cols} cols")
