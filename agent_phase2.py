@@ -206,7 +206,12 @@ def plan(
     allowed_filters = ds.allowed_filter_columns
 
     tools_catalog = [
-        {"name": t["name"], "description": t["description"], "args": t["args"]}
+        {
+            "name": t["name"],
+            "description": t["description"],
+            "synonyms": t.get("synonyms", []),
+            "args": t["args"],
+        }
         for t in ALLOWED_STATS_TOOLS
     ]
 

@@ -26,11 +26,30 @@ ALLOWED_STATS_TOOLS: list[dict] = [
     {
         "name": "describe",
         "description": "Summary statistics: count, mean, std, min, max, nulls for each column.",
+        "synonyms": [
+            "summary statistics",
+            "describe the data",
+            "summarize",
+            "summarise",
+            "describe",
+            "statistics",
+            "overview of the data",
+            "data summary",
+        ],
         "args": {"columns": "list of column names"},
     },
     {
         "name": "value_counts",
         "description": "Frequency table of a categorical column.",
+        "synonyms": [
+            "value counts",
+            "how many of each",
+            "breakdown of values",
+            "distribution of",
+            "frequency table",
+            "count of each value",
+            "frequency of values",
+        ],
         "args": {"column": "column name", "top_n": "int, default 10"},
     },
     {

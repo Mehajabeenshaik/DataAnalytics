@@ -55,11 +55,13 @@ class DataSource:
     # ── PII detection + masking ────────────────────────────────────────────
 
     def _detect_and_mask_pii(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Detect PII columns via Presidio and mask them in-place.
+        """Detect PII columns via column-name heuristics + Presidio and mask them.
 
-        Uses pii_masker.PIIMasker's analyzer to scan sample values from each
-        non-numeric column. If detections are found, the column is masked
-        using the same tokenisation scheme as the e-commerce pipeline.
+        Column-name heuristics are the PRIMARY PII signal — they are robust and
+        avoid false positives on legitimate categoricals (e.g. "region" with
+        values North/South/East/West that Presidio flags as LOCATION). Presidio
+        value detection is a secondary layer for columns whose names don't hint
+        at PII but whose values contain PERSON/EMAIL/PHONE entities.
 
         Returns the (possibly modified) DataFrame.
         """
@@ -75,24 +77,32 @@ class DataSource:
             return df
 
         df = df.copy()
-        pii_entities = ["PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER", "LOCATION"]
+        # Column-name keywords that strongly indicate PII.
+        PII_NAME_KEYWORDS = (
+            "email", "phone", "name", "address", "ssn", "credit", "card",
+            "password", "dob", "birth", "social", "account",
+        )
+        # Value-based entities. LOCATION is intentionally excluded to avoid
+        # flagging legitimate categoricals like region = North/South/East/West.
+        pii_entities = ["PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER"]
 
         for col in df.columns:
             if pd.api.types.is_numeric_dtype(df[col]):
                 continue
 
-            samples = df[col].dropna().astype(str).head(20).tolist()
-            if not samples:
-                continue
+            col_lower = col.lower()
+            has_pii = any(k in col_lower for k in PII_NAME_KEYWORDS)
 
-            has_pii = False
-            for sample in samples:
-                detections = analyzer.analyze(
-                    text=sample, entities=pii_entities, language="en"
-                )
-                if detections:
-                    has_pii = True
-                    break
+            if not has_pii:
+                samples = df[col].dropna().astype(str).head(20).tolist()
+                if samples:
+                    for sample in samples:
+                        detections = analyzer.analyze(
+                            text=sample, entities=pii_entities, language="en"
+                        )
+                        if detections:
+                            has_pii = True
+                            break
 
             if has_pii:
                 df[col] = df[col].apply(
@@ -147,6 +157,7 @@ class DataSource:
     def load_dataframe(self, df: pd.DataFrame, table_name: str = "data") -> None:
         self.table_name = table_name
         df = df.copy()
+        df = self._detect_and_mask_pii(df)
         for col in df.columns:
             if df[col].dtype == "string" or str(df[col].dtype).startswith("str"):
                 df[col] = df[col].astype("object")
