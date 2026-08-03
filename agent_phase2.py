@@ -29,6 +29,7 @@ from metric_factory import get_metric_catalog_for_llm
 from agent_core import run_metric
 from stats_tools import ALLOWED_STATS_TOOLS, VALID_TOOL_NAMES, run_stats_tool
 from llm_provider import LLMProvider
+from cache import get_cached_response, set_cached_response, clear_cache
 
 
 # ── PII defense-in-depth ──────────────────────────────────────────────────
@@ -47,18 +48,20 @@ def _scrub_pii_from_results(results: list[dict]) -> list[dict]:
     except ImportError:
         return results
 
+    from pii_masker import _might_contain_pii
     for r in results:
         val = r.get("result")
         if isinstance(val, str):
-            detections = masker.scan_text(val)
-            if detections:
-                r["result"] = "[REDACTED - possible PII detected]"
+            if _might_contain_pii(val):
+                detections = masker.scan_text(val)
+                if detections:
+                    r["result"] = "[REDACTED - possible PII detected]"
         elif isinstance(val, pd.DataFrame):
             for col in val.columns:
                 if val[col].dtype == "object":
                     for idx in val.index:
                         cell = val.at[idx, col]
-                        if isinstance(cell, str):
+                        if isinstance(cell, str) and _might_contain_pii(cell):
                             detections = masker.scan_text(cell)
                             if detections:
                                 val.at[idx, col] = "[REDACTED - possible PII detected]"
@@ -400,7 +403,13 @@ def ask(question: str, ds: DataSource, provider: LLMProvider) -> dict:
     """Phase 2 agent loop: plan -> execute -> synthesize.
 
     This is the main entrypoint for the governed agent.
+    Checks the response cache first - repeated questions skip the LLM entirely.
     """
+    # Check cache first (before any LLM call)
+    cached = get_cached_response(question)
+    if cached is not None:
+        return cached
+
     the_plan = plan(question, ds, provider)
 
     if not the_plan.can_answer or the_plan.plan_type == "no_match":
@@ -432,8 +441,13 @@ def ask(question: str, ds: DataSource, provider: LLMProvider) -> dict:
     results = execute_plan(the_plan, ds)
     answer = synthesize(question, the_plan, results, provider)
 
-    return {
+    response = {
         **answer,
         "plan": the_plan.model_dump(),
         "results": results,
     }
+
+    # Cache the response for future repeated questions
+    set_cached_response(question, None, response)
+
+    return response

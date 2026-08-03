@@ -30,6 +30,28 @@ except ImportError:
     print("WARNING: presidio-analyzer not installed. Run: pip install presidio-analyzer presidio-anonymizer")
 
 
+import re
+
+# Lightweight regex pre-filter: quickly check if a string MIGHT contain PII
+# before invoking the full Presidio/spaCy NER pipeline.
+# Catches: emails (@), phone-like digit sequences, Capitalized-Word-Pair name shapes.
+_QUICK_PII_PATTERNS = re.compile(
+    r'@|(\+?\d[\d\-\s]{7,}\d)|(\b[A-Z][a-z]+\s[A-Z][a-z]+\b)'
+)
+
+
+def _might_contain_pii(text: str) -> bool:
+    """Fast regex check: does this string MIGHT contain PII?
+
+    Returns True if the string matches common PII patterns (email, phone,
+    or Capitalized Name Pair). Only strings that return True should be
+    sent to the full Presidio analyzer.
+    """
+    if not text or not isinstance(text, str):
+        return False
+    return bool(_QUICK_PII_PATTERNS.search(text))
+
+
 VAULT_SCHEMA = """
 CREATE TABLE IF NOT EXISTS pii_vault (
     customer_id       INTEGER,
@@ -93,6 +115,9 @@ class PIIMasker:
     # ------------------------------------------------------------------
 
     def scan_text(self, text: str, entities: list[str] | None = None) -> list:
+        # Fast pre-filter: skip Presidio entirely if no PII-like patterns
+        if not _might_contain_pii(text):
+            return []
         analyzer = _get_analyzer()
         if analyzer is None:
             return []
