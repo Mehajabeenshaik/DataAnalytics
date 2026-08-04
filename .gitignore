@@ -13,5 +13,10 @@ __pycache__/
 *.db
 *.db.key
 
-# Encrypted DBs (*.db.enc) are safe to commit — they're Fernet-encrypted.
-# Do NOT add *.db.enc here.
+# Encrypted DBs (*.db.enc) are generated at runtime — do NOT ship them
+# in the repo. Users generate their own demo/PII data.
+*.db.enc
+
+# ── Evaluation output logs ─────────────────────────────────────────
+# Eval result logs are historical artifacts — regenerate, don't commit.
+eval/results*.txt

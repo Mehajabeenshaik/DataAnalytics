@@ -12,12 +12,16 @@ PII Protection:
 
 from __future__ import annotations
 
+import threading
+import time
 from pathlib import Path
 from typing import Any
 
 import duckdb
 import pandas as pd
+from cachetools import TTLCache
 from pydantic import BaseModel, Field
+from sqlalchemy import create_engine, text
 
 
 class ColumnProfile(BaseModel):
@@ -51,6 +55,14 @@ class DataSource:
         self._allowed_filter_columns: list[str] = []
         self._metrics_cache: dict | None = None
         self._pii_masked_columns: set[str] = set()
+
+        # Live-connection state (set by connect_live())
+        self._is_live = False
+        self._engine = None
+        self._refresh_mode = "ttl"
+        self._live_table_name = "data"
+        self._query_cache: TTLCache | None = None
+        self._cache_lock = threading.Lock()
 
     # ── PII detection + masking ────────────────────────────────────────────
 
@@ -199,6 +211,138 @@ class DataSource:
             df = self._detect_and_mask_pii(df)
             self.load_dataframe(df, "data")
 
+    # ── Live connection (read-only DB) ─────────────────────────────────────
+
+    def connect_live(
+        self,
+        connection_string: str,
+        refresh_mode: str = "ttl",
+        ttl_seconds: int = 30,
+        table_name: str = "data",
+    ) -> None:
+        """Connect to a LIVE, read-only database instead of loading a static snapshot.
+
+        connection_string MUST point to a read-only database role/user — this method
+        does not enforce that at the code level (the DB server does), but it will
+        refuse to proceed if a basic write-capability check fails.
+
+        refresh_mode:
+          "always" — every query() call hits the live database, no caching
+          "ttl"    — query results are cached in-memory for ttl_seconds
+        """
+        if refresh_mode not in ("always", "ttl"):
+            raise ValueError(f"refresh_mode must be 'always' or 'ttl', got {refresh_mode!r}")
+
+        self._engine = create_engine(connection_string, pool_pre_ping=True)
+        self._is_live = True
+        self._refresh_mode = refresh_mode
+        self._live_table_name = table_name
+        self.table_name = table_name
+        self._query_cache = TTLCache(maxsize=200, ttl=ttl_seconds) if refresh_mode == "ttl" else None
+        self._cache_lock = threading.Lock()
+
+        self._verify_readonly_connection()
+
+        # Build the profile once at connect time, same as static loaders —
+        # metric_factory.py needs this regardless of live/static mode.
+        sample_df = self._fetch_live(f"SELECT * FROM {table_name} LIMIT 500")
+        self._build_profile_from_dataframe(sample_df, table_name)
+
+    def _verify_readonly_connection(self) -> None:
+        """Defensive check: attempt a harmless write in a transaction that's always
+        rolled back, and confirm the database rejects it. This does NOT replace
+        granting a real read-only DB role — it's a sanity check that catches an
+        obviously misconfigured (writable) connection string before any real use.
+
+        SQLite has no real read-only-role mechanism, so this check is skipped for
+        SQLite URLs (the CREATE TABLE would succeed and falsely fail the check).
+        """
+        if self._engine is None:
+            return
+        url = str(self._engine.url)
+        if url.startswith("sqlite"):
+            return  # SQLite has no role-based permissions — skip the check.
+
+        test_table = f"_readonly_check_{int(time.time())}"
+        try:
+            with self._engine.begin() as conn:
+                conn.execute(text(f"CREATE TABLE {test_table} (id INTEGER)"))
+                conn.rollback()  # never actually commits
+            # If we reach here without an error, the connection CAN write — refuse.
+            raise PermissionError(
+                "connect_live() refused: this connection string appears to have WRITE "
+                "access. Pass a connection string for a READ-ONLY database role only."
+            )
+        except PermissionError:
+            raise
+        except Exception:
+            # Any DB-level permission error here is the EXPECTED, safe outcome.
+            pass
+
+    def _fetch_live(self, sql: str, params: list | dict | None = None) -> pd.DataFrame:
+        if self._engine is None:
+            raise RuntimeError("connect_live() has not been called.")
+        with self._engine.connect() as conn:
+            if params:
+                return pd.read_sql_query(text(sql), conn, params=params)
+            return pd.read_sql_query(text(sql), conn)
+
+    def _build_profile_from_dataframe(self, df: pd.DataFrame, table_name: str) -> None:
+        """Build a TableProfile from a DataFrame (used by live mode)."""
+        n_rows = len(df)
+        columns = []
+        for col in df.columns:
+            s = df[col]
+            dtype = str(s.dtype)
+            is_num = pd.api.types.is_numeric_dtype(s)
+            is_temp = pd.api.types.is_datetime64_any_dtype(s) or "date" in col.lower()
+            n_unique = int(s.nunique(dropna=True))
+            is_cat = (not is_num) and n_unique <= min(50, max(10, n_rows // 20))
+
+            examples = s.dropna().head(3).tolist()
+            examples = [
+                str(x) if not isinstance(x, (int, float, str, bool)) else x
+                for x in examples
+            ]
+
+            columns.append(
+                ColumnProfile(
+                    name=col,
+                    dtype=dtype,
+                    n_unique=n_unique,
+                    n_null=int(s.isna().sum()),
+                    examples=examples,
+                    is_numeric=is_num,
+                    is_temporal=is_temp,
+                    is_categorical=is_cat,
+                )
+            )
+
+        sample = df.head(5).to_dict(orient="records")
+        for row in sample:
+            for k, v in row.items():
+                if not isinstance(v, (int, float, str, bool, type(None))):
+                    row[k] = str(v)
+
+        self.profile = TableProfile(
+            name=table_name,
+            n_rows=n_rows,
+            n_cols=len(columns),
+            columns=columns,
+            sample_rows=sample,
+        )
+
+        self._allowed_filter_columns = [
+            c.name
+            for c in columns
+            if c.is_categorical or c.is_temporal or (c.n_unique and c.n_unique <= 30)
+        ]
+
+        self._metrics_cache = None
+
+    def is_live(self) -> bool:
+        return self._is_live
+
     # ── Profiling ──────────────────────────────────────────────────────────
 
     def _build_profile(self, sample_size: int = 5) -> None:
@@ -274,10 +418,35 @@ class DataSource:
         return self._metrics_cache
 
     def query(self, sql: str, params: list | None = None) -> pd.DataFrame:
-        """Only called by the safe execution layer -- never by the LLM."""
-        if params:
-            return self.con.execute(sql, params).fetchdf()
-        return self.con.execute(sql).fetchdf()
+        """Only called by the safe execution layer -- never by the LLM.
+
+        If this DataSource was created via connect_live(), routes through the
+        live connection (with caching per refresh_mode). Otherwise, falls back
+        to the original static DuckDB behavior. Signature is UNCHANGED.
+        """
+        if not self._is_live:
+            if params:
+                return self.con.execute(sql, params).fetchdf()
+            return self.con.execute(sql).fetchdf()
+
+        if self._refresh_mode == "always":
+            return self._fetch_live(sql, params)
+
+        # refresh_mode == "ttl"
+        cache_key = (
+            sql,
+            tuple(params) if isinstance(params, list) else tuple(params or ()),
+        )
+        with self._cache_lock:
+            if cache_key in self._query_cache:
+                return self._query_cache[cache_key].copy()
+
+        result = self._fetch_live(sql, params)
+
+        with self._cache_lock:
+            self._query_cache[cache_key] = result.copy()
+
+        return result
 
     def get_schema_card(self) -> str:
         """Compact, LLM-friendly schema description."""
