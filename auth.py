@@ -1,6 +1,7 @@
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
@@ -19,7 +20,20 @@ CREATE TABLE IF NOT EXISTS users (
 pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
-app = FastAPI(title="DataAnalytics Auth", version="1.0")
+app = FastAPI(title="DataAnalytics", version="2.0")
+
+# ── CORS — required for cross-origin widget embed requests ────────────────
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ── Mount widget API router ───────────────────────────────────────────────
+from api_widget import widget_router  # noqa: E402
+app.include_router(widget_router)
 
 
 def _get_auth_db():
@@ -117,6 +131,22 @@ require_any = RoleChecker(["admin", "viewer"])
 @app.on_event("startup")
 def startup():
     init_auth_db()
+    from tenant import init_tenant_db
+    init_tenant_db()
+
+    # Pre-load local Ollama model in background thread to avoid cold-start delays
+    import threading
+    def _warmup_model():
+        try:
+            from llm_provider import get_provider
+            provider = get_provider("ollama")
+            provider.generate("hi", system_prompt="Respond in JSON: {\"status\": \"ok\"}")
+            print("Ollama model pre-loaded into memory successfully!")
+        except Exception as e:
+            print(f"Ollama background warmup notice: {e}")
+
+    threading.Thread(target=_warmup_model, daemon=True).start()
+
 
 
 @app.post("/auth/login", response_model=Token)

@@ -99,12 +99,13 @@ Produce a plan in STRICT JSON only:
 Rules:
 - Maximum 3 steps.
 - Only use metric names that appear in the catalog.
-- Only use tool names from the allowed tools list.
+- Only use tool names from the allowed tools list: describe, value_counts, correlation, group_compare, missingness, trend.
+- For questions comparing totals/means across categories (e.g. "highest sales by region", "sales per region"), use plan_type="stats_tool", action="run_stats", target="group_compare", args={"value_col": "<numeric_col>", "group_col": "<cat_col>", "agg": "sum"}.
 - Filters may only use columns from the allowed filter list.
 - If the question needs a calculation that does not exist yet, use plan_type = "propose_metric".
-- If nothing is appropriate, set can_answer = false and plan_type = "no_match".
 - Output ONLY valid JSON. No markdown, no extra text.
 """
+
 
 PROPOSE_METRIC_SYSTEM = """You are proposing a new governed metric for a local data analyst system.
 
@@ -418,14 +419,43 @@ def ask(question: str, ds: DataSource, provider: LLMProvider) -> dict:
     the_plan = plan(question, ds, provider)
 
     if not the_plan.can_answer or the_plan.plan_type == "no_match":
-        return {
-            "answer": "I don't have a reliable metric or tool that answers this question with the current data.",
-            "confidence": "n/a",
-            "caveats": ["No matching metric or tool in the allowlist."],
-            "lineage": {"metrics_or_tools_used": [], "filters_applied": {}, "notes": "no_match"},
-            "plan": the_plan.model_dump(),
-            "results": [],
-        }
+        # Fallback: attempt deterministic metric/tool matching against DataSource schema
+        metrics = ds.get_metrics()
+        q_lower = question.lower()
+        matched_step = None
+
+        # 1. Search metric catalog synonyms & names
+        for m_name, m_info in metrics.items():
+            syns = [m_name.replace("_", " ")] + m_info.get("synonyms", [])
+            if any(syn in q_lower for syn in syns) or (m_info.get("column") in q_lower and (m_info.get("groupby") and m_info.get("groupby") in q_lower)):
+                matched_step = PlanStep(step_id=1, action="run_metric", target=m_name)
+                break
+
+        # 2. Search column pairs for group comparison if not matched
+        if not matched_step and ds.profile:
+            num_cols = [c.name for c in ds.profile.columns if c.is_numeric]
+            cat_cols = [c.name for c in ds.profile.columns if c.is_categorical]
+            num_match = next((nc for nc in num_cols if nc in q_lower or nc[:-1] in q_lower), num_cols[0] if num_cols else None)
+            cat_match = next((cc for cc in cat_cols if cc in q_lower or cc[:-1] in q_lower), cat_cols[0] if cat_cols else None)
+            if num_match and cat_match:
+                m_target = f"{num_match}_by_{cat_match}"
+                if m_target in metrics:
+                    matched_step = PlanStep(step_id=1, action="run_metric", target=m_target)
+                else:
+                    matched_step = PlanStep(step_id=1, action="run_stats", target="group_compare", args={"value_col": num_match, "group_col": cat_match, "agg": "sum"})
+
+        if matched_step:
+            the_plan = Plan(can_answer=True, reason="Matched metric/tool via schema fallback", plan_type="single_metric" if matched_step.action == "run_metric" else "stats_tool", steps=[matched_step])
+        else:
+            return {
+                "answer": "I don't have a reliable metric or tool that answers this question with the current data.",
+                "confidence": "n/a",
+                "caveats": ["No matching metric or tool in the allowlist."],
+                "lineage": {"metrics_or_tools_used": [], "filters_applied": {}, "notes": "no_match"},
+                "plan": the_plan.model_dump(),
+                "results": [],
+            }
+
 
     if the_plan.plan_type == "propose_metric":
         proposal = propose_metric(question, ds, provider)

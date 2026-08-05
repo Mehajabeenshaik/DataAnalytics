@@ -54,19 +54,29 @@ class OllamaProvider(LLMProvider):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "stream": False,
+            "keep_alive": -1,
+
+            "options": {
+                "temperature": temperature,
+                "num_predict": 400,
+                "num_ctx": 2048,
+            },
+        }
+
+
         try:
             r = requests.post(
                 f"{self.base_url}/api/chat",
-                json={
-                    "model": self.model,
-                    "messages": messages,
-                    "stream": False,
-                    "options": {"temperature": temperature},
-                },
-                timeout=120,
+                json=payload,
+                timeout=300,
             )
             r.raise_for_status()
             return r.json()["message"]["content"]
+
         except requests.ConnectionError:
             raise ConnectionError(
                 f"Cannot connect to Ollama at {self.base_url}. "

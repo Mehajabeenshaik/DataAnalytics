@@ -160,8 +160,13 @@ class DataSource:
             df = pd.read_csv(path)
         elif path.suffix.lower() in {".parquet", ".pq"}:
             df = pd.read_parquet(path)
+        elif path.suffix.lower() in {".xlsx", ".xls"}:
+            df = pd.read_excel(path)
+        elif path.suffix.lower() == ".json":
+            df = pd.read_json(path)
         else:
             raise ValueError(f"Unsupported file type: {path.suffix}")
+
 
         df = self._detect_and_mask_pii(df)
         self.load_dataframe(df, table_name)
