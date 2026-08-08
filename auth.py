@@ -189,21 +189,42 @@ async def register(user_data: UserCreate, admin: UserOut = Depends(require_admin
 
 @app.get("/admin/reseed", dependencies=[Depends(require_admin)])
 async def reseed_data():
-    from data_layer import init_db
-    init_db(force_reseed=True)
-    return {"status": "success", "message": "Database reseeded"}
+    # data_layer.py does not exist anywhere in this codebase — the previous
+    # implementation imported a nonexistent module and always crashed with
+    # ModuleNotFoundError on every call. Failing loudly and honestly until a
+    # real seeding pipeline (e.g. rebuilding ecommerce.db(.enc) from
+    # sample_sales_data.csv) is implemented, rather than crashing on an
+    # unrelated import error.
+    raise HTTPException(
+        status_code=501,
+        detail=(
+            "Reseeding is not implemented. Build a data_layer.init_db() "
+            "that repopulates ecommerce.db(.enc) from a known source "
+            "(e.g. sample_sales_data.csv), then wire it back in here."
+        ),
+    )
 
 
 @app.get("/admin/pii-vault/{customer_id}", dependencies=[Depends(require_admin)])
 async def get_pii_vault(customer_id: int):
     import sqlite3
-    from config import PII_VAULT_PATH
-    conn = sqlite3.connect(PII_VAULT_PATH)
-    conn.row_factory = sqlite3.Row
-    rows = conn.execute(
-        "SELECT * FROM pii_vault WHERE customer_id = ?", (customer_id,)
-    ).fetchall()
-    conn.close()
+    from config import PII_VAULT_ENCRYPTED_PATH
+    from encryption import EncryptedDB
+
+    # pii_masker.py ONLY ever writes to the Fernet-encrypted vault at
+    # PII_VAULT_ENCRYPTED_PATH (pii_vault.db.enc) via EncryptedDB. The
+    # previous version of this endpoint read the plaintext PII_VAULT_PATH
+    # (pii_vault.db) directly — a file that is never created — so it always
+    # 404'd, and even if it had existed, bypassing EncryptedDB would defeat
+    # the encryption model entirely.
+    with EncryptedDB(encrypted_path=PII_VAULT_ENCRYPTED_PATH) as tmp_db:
+        conn = sqlite3.connect(tmp_db)
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM pii_vault WHERE customer_id = ?", (customer_id,)
+        ).fetchall()
+        conn.close()
+
     if not rows:
         raise HTTPException(status_code=404, detail="Customer not found in PII vault")
     return {"customer_id": customer_id, "pii_records": [dict(r) for r in rows]}

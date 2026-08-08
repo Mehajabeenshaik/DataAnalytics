@@ -337,12 +337,18 @@ def execute_plan(the_plan: Plan, ds: DataSource) -> list[dict]:
 
 # ── Step 4: Synthesize (LLM call #2) ──────────────────────────────────────
 
-def synthesize(
+def _build_synthesize_prompt(
     question: str,
     the_plan: Plan,
     results: list[dict],
-    provider: LLMProvider,
-) -> dict:
+) -> tuple[str, list[dict], list[dict]]:
+    """Build the synthesizer prompt, sharing PII scrubbing + serialization.
+
+    Returns (prompt, serializable_results, scrubbed_results). Both
+    synthesize() and synthesize_stream() use this so the prompt text and
+    PII defense-in-depth are identical between the blocking and streaming
+    delivery paths.
+    """
     # PII defense-in-depth: scrub any PII from results before synthesis
     results = _scrub_pii_from_results(results)
 
@@ -374,9 +380,19 @@ def synthesize(
         f"Plan: {the_plan.model_dump_json()}\n\n"
         f"Results:\n{json.dumps(serializable_results, indent=2, default=str)}"
     )
+    return prompt, serializable_results, results
 
-    raw = provider.generate(prompt, system_prompt=SYNTHESIZER_SYSTEM, temperature=0.3)
 
+def _parse_synthesize_response(
+    raw: str,
+    serializable_results: list[dict],
+    results: list[dict],
+) -> dict:
+    """Parse/validate the synthesizer's raw text into the structured shape.
+
+    Same fallback-on-JSONDecodeError behavior and small-result-set
+    confidence downgrade as the blocking synthesize().
+    """
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
@@ -403,18 +419,70 @@ def synthesize(
     return data
 
 
+def synthesize(
+    question: str,
+    the_plan: Plan,
+    results: list[dict],
+    provider: LLMProvider,
+) -> dict:
+    prompt, serializable_results, results = _build_synthesize_prompt(
+        question, the_plan, results
+    )
+    raw = provider.generate(prompt, system_prompt=SYNTHESIZER_SYSTEM, temperature=0.3)
+    return _parse_synthesize_response(raw, serializable_results, results)
+
+
+def synthesize_stream(
+    question: str,
+    the_plan: Plan,
+    results: list[dict],
+    provider: LLMProvider,
+):
+    """Stream the synthesizer's output, then yield the final structured event.
+
+    Yields:
+        - str chunks of the raw LLM text as they arrive (for direct display)
+        - finally, a dict with the full structured response
+          (answer/confidence/caveats/lineage), parsed/validated exactly like
+          the blocking synthesize() (same JSONDecodeError fallback).
+
+    This is a delivery-mechanism change only — the prompt, PII scrubbing,
+    and validation are identical to synthesize().
+    """
+    prompt, serializable_results, results = _build_synthesize_prompt(
+        question, the_plan, results
+    )
+
+    chunks: list[str] = []
+    for chunk in provider.generate_stream(
+        prompt, system_prompt=SYNTHESIZER_SYSTEM, temperature=0.3
+    ):
+        chunks.append(chunk)
+        yield chunk
+
+    raw = "".join(chunks)
+    yield _parse_synthesize_response(raw, serializable_results, results)
+
+
 # ── Top-level entrypoint ─────────────────────────────────────────────────
 
-def ask(question: str, ds: DataSource, provider: LLMProvider) -> dict:
-    """Phase 2 agent loop: plan -> execute -> synthesize.
+def _resolve_question(
+    question: str,
+    ds: DataSource,
+    provider: LLMProvider,
+) -> tuple[Plan | None, dict | None]:
+    """Run plan() + schema-fallback matching + propose-metric flow.
 
-    This is the main entrypoint for the governed agent.
-    Checks the response cache first - repeated questions skip the LLM entirely.
+    Shared by ask() and ask_stream() so both delivery paths behave
+    identically. Returns (the_plan, early_response): if the question cannot
+    proceed to synthesis (no_match, propose_metric, or a response-cache hit)
+    early_response is a complete structured response and the_plan is None.
     """
-    # Check cache first (before any LLM call)
-    cached = get_cached_response(question)
+    # Check cache first (before any LLM call). Scoped to this DataSource's
+    # identity so different datasets/tenants never share cache entries.
+    cached = get_cached_response(question, dataset_id=ds.dataset_id)
     if cached is not None:
-        return cached
+        return None, cached
 
     the_plan = plan(question, ds, provider)
 
@@ -431,12 +499,17 @@ def ask(question: str, ds: DataSource, provider: LLMProvider) -> dict:
                 matched_step = PlanStep(step_id=1, action="run_metric", target=m_name)
                 break
 
-        # 2. Search column pairs for group comparison if not matched
+        # 2. Search column pairs for group comparison if not matched.
+        # IMPORTANT: no blind default — falling back to num_cols[0]/cat_cols[0]
+        # when nothing in the question actually matched meant ANY question
+        # (even "what's the weather?") matched the first numeric+categorical
+        # pair in the schema, so plan_type was never really "no_match" for
+        # any dataset with at least one numeric and one categorical column.
         if not matched_step and ds.profile:
             num_cols = [c.name for c in ds.profile.columns if c.is_numeric]
             cat_cols = [c.name for c in ds.profile.columns if c.is_categorical]
-            num_match = next((nc for nc in num_cols if nc in q_lower or nc[:-1] in q_lower), num_cols[0] if num_cols else None)
-            cat_match = next((cc for cc in cat_cols if cc in q_lower or cc[:-1] in q_lower), cat_cols[0] if cat_cols else None)
+            num_match = next((nc for nc in num_cols if nc in q_lower or nc[:-1] in q_lower), None)
+            cat_match = next((cc for cc in cat_cols if cc in q_lower or cc[:-1] in q_lower), None)
             if num_match and cat_match:
                 m_target = f"{num_match}_by_{cat_match}"
                 if m_target in metrics:
@@ -447,7 +520,7 @@ def ask(question: str, ds: DataSource, provider: LLMProvider) -> dict:
         if matched_step:
             the_plan = Plan(can_answer=True, reason="Matched metric/tool via schema fallback", plan_type="single_metric" if matched_step.action == "run_metric" else "stats_tool", steps=[matched_step])
         else:
-            return {
+            return None, {
                 "answer": "I don't have a reliable metric or tool that answers this question with the current data.",
                 "confidence": "n/a",
                 "caveats": ["No matching metric or tool in the allowlist."],
@@ -456,10 +529,9 @@ def ask(question: str, ds: DataSource, provider: LLMProvider) -> dict:
                 "results": [],
             }
 
-
     if the_plan.plan_type == "propose_metric":
         proposal = propose_metric(question, ds, provider)
-        return {
+        return None, {
             "answer": "This question needs a new metric. I've drafted a proposal for your review.",
             "confidence": "n/a",
             "caveats": ["Proposed metric requires human approval before use."],
@@ -473,6 +545,19 @@ def ask(question: str, ds: DataSource, provider: LLMProvider) -> dict:
             "proposal": proposal.model_dump(),
         }
 
+    return the_plan, None
+
+
+def ask(question: str, ds: DataSource, provider: LLMProvider) -> dict:
+    """Phase 2 agent loop: plan -> execute -> synthesize.
+
+    This is the main entrypoint for the governed agent.
+    Checks the response cache first - repeated questions skip the LLM entirely.
+    """
+    the_plan, early_response = _resolve_question(question, ds, provider)
+    if early_response is not None:
+        return early_response
+
     results = execute_plan(the_plan, ds)
     answer = synthesize(question, the_plan, results, provider)
 
@@ -482,7 +567,53 @@ def ask(question: str, ds: DataSource, provider: LLMProvider) -> dict:
         "results": results,
     }
 
-    # Cache the response for future repeated questions
-    set_cached_response(question, None, response)
+    # Cache the response for future repeated questions (scoped to this dataset)
+    set_cached_response(question, None, response, dataset_id=ds.dataset_id)
 
     return response
+
+
+def ask_stream(
+    question: str,
+    ds: DataSource,
+    provider: LLMProvider,
+):
+    """Streaming Phase 2 agent loop: plan -> execute -> synthesize (streamed).
+
+    Yields:
+        - str chunks of the synthesizer's text as they arrive (for direct
+          incremental display in the widget)
+        - finally, a dict with the full structured response, mirroring the
+          blocking ask() shape: answer/confidence/caveats/lineage plus
+          "plan" and "results".
+
+    plan() and execute_plan() run exactly as in ask() (blocking — plan()
+    must produce validated, allowlist-checked JSON before anything executes).
+    Only the synthesize step's delivery is streamed. A response-cache hit or
+    a no_match/propose_metric early exit yields a single dict with no text
+    chunks, matching what ask() would have returned.
+    """
+    the_plan, early_response = _resolve_question(question, ds, provider)
+    if early_response is not None:
+        yield early_response
+        return
+
+    results = execute_plan(the_plan, ds)
+
+    final_answer: dict | None = None
+    for event in synthesize_stream(question, the_plan, results, provider):
+        if isinstance(event, str):
+            yield event
+        else:
+            final_answer = event
+
+    response = {
+        **(final_answer or {}),
+        "plan": the_plan.model_dump(),
+        "results": results,
+    }
+
+    # Cache the response for future repeated questions (same as ask())
+    set_cached_response(question, None, response)
+
+    yield response

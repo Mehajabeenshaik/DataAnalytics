@@ -369,7 +369,7 @@
   }
 
   // ── Render Q&A response ─────────────────────────────────────────────
-  function renderAnswer(data) {
+  function renderAnswerHtml(data) {
     let html = `<p>${esc(data.answer)}</p>`;
     if (data.confidence && data.confidence !== "n/a") {
       html += `<span class="da-confidence ${data.confidence}">${data.confidence === "high" ? "✓" : "⚠"} ${data.confidence}</span>`;
@@ -377,7 +377,11 @@
     if (data.caveats?.length) {
       data.caveats.forEach(c => { html += `<p style="font-size:11px;color:#fbbf24;margin-top:4px;">⚠ ${esc(c)}</p>`; });
     }
-    addMsg(html);
+    return html;
+  }
+
+  function renderAnswer(data) {
+    addMsg(renderAnswerHtml(data));
   }
 
   // ── API calls ───────────────────────────────────────────────────────
@@ -468,6 +472,53 @@
     }
   }
 
+  // ── SSE streaming (fetch-based, not EventSource) ────────────────────
+  //
+  // IMPORTANT: EventSource cannot set custom request headers, so it cannot
+  // send X-API-Key. We use fetch() + a ReadableStream reader instead, with
+  // the same X-API-Key header as every other API call in this widget.
+  async function askQuestionStream(text, { onChunk, onFinal, onError }) {
+    const res = await fetch(`${API_URL}/api/v1/ask/stream`, {
+      method: "POST",
+      headers: {
+        "X-API-Key": API_KEY,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ session_id: sessionId, question: text }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({ detail: res.statusText }));
+      throw new Error(err.detail || "Request failed");
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = "";
+
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+
+      // SSE events are separated by a blank line (\n\n)
+      const events = buffer.split("\n\n");
+      buffer = events.pop();
+
+      for (const evt of events) {
+        const line = evt.trim();
+        if (!line.startsWith("data:")) continue;
+        const payload = JSON.parse(line.slice(5).trim());
+        if (payload.type === "chunk") {
+          onChunk(payload.text || "");
+        } else if (payload.type === "final") {
+          onFinal(payload.data || {});
+        } else if (payload.type === "error") {
+          onError(payload.message || "Streaming error");
+        }
+      }
+    }
+  }
+
   // ── Send message ────────────────────────────────────────────────────
   input.onkeydown = e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); sendMessage(); } };
   sendBtn.onclick = sendMessage;
@@ -485,17 +536,42 @@
     input.disabled = true;
     sendBtn.disabled = true;
 
+    // Build the bot message bubble now; fill it as chunks arrive.
+    const botMsg = addMsg("", "bot");
+    let streamedText = "";
+
     try {
-      const data = await api("/api/v1/ask", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ session_id: sessionId, question: text }),
+      await askQuestionStream(text, {
+        onChunk: (chunk) => {
+          hideTyping();
+          streamedText += chunk;
+          botMsg.innerHTML = `<p>${esc(streamedText)}</p>`;
+          messages.scrollTop = messages.scrollHeight;
+        },
+        onFinal: (data) => {
+          // Final structured event: answer + confidence/caveats/lineage.
+          hideTyping();
+          botMsg.innerHTML = renderAnswerHtml(data);
+          messages.scrollTop = messages.scrollHeight;
+        },
+        onError: (msg) => {
+          hideTyping();
+          botMsg.innerHTML = `<p>❌ ${esc(msg)}</p>`;
+        },
       });
-      hideTyping();
-      renderAnswer(data);
     } catch (e) {
       hideTyping();
-      addMsg(`❌ ${esc(e.message)}`, "system");
+      // Fall back to the blocking JSON endpoint if streaming is unavailable.
+      try {
+        const data = await api("/api/v1/ask", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ session_id: sessionId, question: text }),
+        });
+        botMsg.innerHTML = renderAnswerHtml(data);
+      } catch (e2) {
+        botMsg.innerHTML = `<p>❌ ${esc(e2.message)}</p>`;
+      }
     } finally {
       isAsking = false;
       input.disabled = false;

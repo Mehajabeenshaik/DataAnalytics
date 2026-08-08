@@ -113,3 +113,41 @@ def test_cache_info():
     assert "maxsize" in info
     assert "ttl" in info
     assert info["maxsize"] == 500
+
+
+def test_cache_does_not_leak_across_datasets():
+    """Two DataSources with different data, same question text, must NOT
+    return the same cached result (regression test for cross-tenant leak)."""
+    df_a = pd.DataFrame({
+        "order_id": [1, 2, 3],
+        "revenue": [100.0, 200.0, 300.0],
+        "region": ["North", "South", "North"],
+    })
+    df_b = pd.DataFrame({
+        "order_id": [1, 2, 3],
+        "revenue": [9000.0, 9000.0, 9000.0],
+        "region": ["East", "West", "East"],
+    })
+    ds_a = DataSource()
+    ds_a.load_dataframe(df_a)
+    ds_b = DataSource()
+    ds_b.load_dataframe(df_b)
+
+    metric_a = list(ds_a.get_metrics().keys())[0]
+    metric_b = list(ds_b.get_metrics().keys())[0]
+
+    provider = MagicMock()
+    provider.generate.side_effect = [
+        json.dumps({"can_answer": True, "reason": "Found", "plan_type": "single_metric",
+                    "steps": [{"step_id": 1, "action": "run_metric", "target": metric_a, "filters": {}, "args": {}}]}),
+        json.dumps({"answer": "Dataset A result.", "confidence": "high", "caveats": [], "lineage": {}}),
+        json.dumps({"can_answer": True, "reason": "Found", "plan_type": "single_metric",
+                    "steps": [{"step_id": 1, "action": "run_metric", "target": metric_b, "filters": {}, "args": {}}]}),
+        json.dumps({"answer": "Dataset B result.", "confidence": "high", "caveats": [], "lineage": {}}),
+    ]
+
+    result_a = ask("What is total revenue?", ds_a, provider)
+    result_b = ask("What is total revenue?", ds_b, provider)
+
+    assert result_a["answer"] != result_b["answer"]
+    assert provider.generate.call_count == 4  # both datasets hit the LLM, no false cache hit

@@ -17,6 +17,9 @@ PII_VAULT_ENCRYPTED_PATH = os.getenv("PII_VAULT_ENCRYPTED_PATH", str(BASE_DIR / 
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 OLLAMA_BASE_URL = os.getenv("OLLAMA_BASE_URL", "http://localhost:11434")
+NVIDIA_API_KEY = os.getenv("NVIDIA_API_KEY", "")
+NVIDIA_BASE_URL = os.getenv("NVIDIA_BASE_URL", "https://integrate.api.nvidia.com/v1")
+NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/llama-3.1-nemotron-super-49b-v1")
 # Default local model: nemotron-3-nano:4b (Nemotron 3 Nano, 4B params).
 # Fallback/alternative: qwen2.5-coder:14b - larger, code-tuned, more accurate
 # on structured JSON output but needs more VRAM. Use if Nemotron underperforms:

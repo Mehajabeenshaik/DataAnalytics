@@ -6,6 +6,7 @@ import requests
 from config import (
     LLM_PROVIDER, GEMINI_API_KEY,
     OLLAMA_BASE_URL, OLLAMA_MODEL, SESSION_TIMEOUT_MINUTES,
+    NVIDIA_API_KEY, NVIDIA_BASE_URL, NVIDIA_MODEL,
 )
 
 logger = logging.getLogger(__name__)
@@ -23,6 +24,18 @@ class LLMProvider(abc.ABC):
                          routing decisions; higher (0.7+) for natural text.
         """
         ...
+
+    def generate_stream(
+        self, prompt: str, system_prompt: str = "", temperature: float = 0.1
+    ) -> "abc.Iterator[str]":
+        """Stream content chunks from the LLM.
+
+        Default implementation yields the full result of generate() as a
+        single chunk, so providers that don't implement true token streaming
+        still work with streaming callers. Providers that support real
+        streaming (e.g. Ollama /api/chat with stream=true) override this.
+        """
+        yield self.generate(prompt, system_prompt=system_prompt, temperature=temperature)
 
     @abc.abstractmethod
     def provider_name(self) -> str:
@@ -76,13 +89,15 @@ class OllamaProvider(LLMProvider):
         messages.append({"role": "user", "content": prompt})
         return messages
 
-    def generate(self, prompt: str, system_prompt: str = "", temperature: float = 0.1) -> str:
+    def _build_payload(
+        self, prompt: str, system_prompt: str, temperature: float, stream: bool
+    ) -> dict:
+        """Build the /api/chat request payload (shared by generate/generate_stream)."""
         messages = self._build_messages(prompt, system_prompt)
-
         payload = {
             "model": self.model,
             "messages": messages,
-            "stream": False,
+            "stream": stream,
             "options": {
                 "temperature": temperature,
                 "num_predict": 400,
@@ -95,6 +110,10 @@ class OllamaProvider(LLMProvider):
         # thus reuse the cached prefix across the whole golden set.
         if self.keep_alive is not None:
             payload["keep_alive"] = self.keep_alive
+        return payload
+
+    def generate(self, prompt: str, system_prompt: str = "", temperature: float = 0.1) -> str:
+        payload = self._build_payload(prompt, system_prompt, temperature, stream=False)
 
         try:
             r = requests.post(
@@ -104,6 +123,48 @@ class OllamaProvider(LLMProvider):
             )
             r.raise_for_status()
             return r.json()["message"]["content"]
+        except requests.ConnectionError:
+            raise ConnectionError(
+                f"Cannot connect to Ollama at {self.base_url}. "
+                "Start it with: ollama serve"
+            )
+        except requests.HTTPError as e:
+            if e.response.status_code == 404:
+                raise RuntimeError(
+                    f"Model '{self.model}' not found. Pull it with: ollama pull {self.model}"
+                )
+            raise
+
+    def generate_stream(
+        self, prompt: str, system_prompt: str = "", temperature: float = 0.1
+    ) -> "abc.Iterator[str]":
+        """Stream content chunks from Ollama's /api/chat (stream=true).
+
+        Each yielded value is a text chunk as it is generated. The full
+        concatenation of chunks equals what generate() would return.
+        """
+        payload = self._build_payload(prompt, system_prompt, temperature, stream=True)
+
+        try:
+            with requests.post(
+                f"{self.base_url}/api/chat",
+                json=payload,
+                stream=True,
+                timeout=300,
+            ) as r:
+                r.raise_for_status()
+                for line in r.iter_lines(decode_unicode=True):
+                    if not line:
+                        continue
+                    try:
+                        chunk = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if chunk.get("done"):
+                        break
+                    delta = chunk.get("message", {}).get("content")
+                    if delta:
+                        yield delta
         except requests.ConnectionError:
             raise ConnectionError(
                 f"Cannot connect to Ollama at {self.base_url}. "
@@ -140,11 +201,11 @@ class OllamaProvider(LLMProvider):
 #        Gemini 3.5 Flash / 3.1 Pro Preview    : 4096 tokens
 #     2048 is the lowest current limit, so it is the conservative barrier
 #     used below; prompts under it fall back to uncached generate_content.
-#   - gemini-2.0-flash (current default in __init__) is DEPRECATED and was
-#     shut down 2026-06-01 per the official pricing page; migrate to a newer
-#     model (e.g. gemini-2.5-flash) when possible. We keep the default
-#     unchanged per scope, but it now no longer resolves at runtime.
-#   - Cached-content storage: $1.00 / 1M tokens per hour (gemini-2.0-flash,
+#   - gemini-2.5-flash (current default in __init__) is the supported
+#     default model; the previous default (gemini-2.0-flash) was shut down
+#     2026-06-01 per the official pricing page. The new default now
+#     resolves at runtime.
+#   - Cached-content storage: $1.00 / 1M tokens per hour (gemini-2.5-flash,
 #     paid tier). A typical metric catalog is 1-5K tokens, so per-session
 #     storage cost is negligible while the cache is alive.
 #   Sources: https://ai.google.dev/gemini-api/docs/caching
@@ -186,7 +247,7 @@ class _GeminiCacheHelper:
 
 
 class GeminiProvider(LLMProvider):
-    def __init__(self, api_key: str = GEMINI_API_KEY, model: str = "gemini-2.0-flash"):
+    def __init__(self, api_key: str = GEMINI_API_KEY, model: str = "gemini-2.5-flash"):
         if not api_key:
             raise ValueError(
                 "GEMINI_API_KEY not set. Export it or switch LLM_PROVIDER to 'ollama'."
@@ -417,11 +478,76 @@ class GeminiProvider(LLMProvider):
         return self._generate_uncached(prompt, system_prompt, temperature)
 
 
+class NvidiaProvider(LLMProvider):
+    """NVIDIA NIM — OpenAI-compatible /chat/completions endpoint.
+
+    Cloud-hosted catalog (Nemotron/DeepSeek/Qwen etc). Docs:
+    https://build.nvidia.com — get an API key there.
+    """
+
+    def __init__(
+        self,
+        api_key: str = NVIDIA_API_KEY,
+        base_url: str = NVIDIA_BASE_URL,
+        model: str = NVIDIA_MODEL,
+    ):
+        if not api_key:
+            raise ValueError(
+                "NVIDIA_API_KEY not set. Export it or switch LLM_PROVIDER to 'ollama'."
+            )
+        self.api_key = api_key
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+
+    def provider_name(self) -> str:
+        return f"nvidia/{self.model}"
+
+    def generate(self, prompt: str, system_prompt: str = "", temperature: float = 0.1) -> str:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": 400,
+            "stream": False,
+        }
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+
+        try:
+            r = requests.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                headers=headers,
+                timeout=300,
+            )
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"]
+        except requests.ConnectionError:
+            raise ConnectionError(
+                f"Cannot connect to NVIDIA NIM at {self.base_url}."
+            )
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 401:
+                raise RuntimeError("NVIDIA NIM rejected the API key (401 Unauthorized).")
+            raise
+
+
 def get_provider(provider: str | None = None) -> LLMProvider:
     provider = provider or LLM_PROVIDER
     if provider == "ollama":
         return OllamaProvider()
     elif provider == "gemini":
         return GeminiProvider()
+    elif provider == "nvidia":
+        return NvidiaProvider()
     else:
-        raise ValueError(f"Unknown LLM provider: '{provider}'. Use 'ollama' or 'gemini'.")
+        raise ValueError(
+            f"Unknown LLM provider: '{provider}'. Use 'ollama', 'gemini', or 'nvidia'."
+        )

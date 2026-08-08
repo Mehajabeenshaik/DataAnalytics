@@ -8,6 +8,7 @@ where end users don't log in — the API key identifies the company.
 
 from __future__ import annotations
 
+import json
 import uuid
 import traceback
 import tempfile
@@ -16,7 +17,7 @@ from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 
 from pydantic import BaseModel
 
@@ -307,12 +308,13 @@ async def upload_file(
 
 # ── Follow-up Q&A ───────────────────────────────────────────────────────
 
-@widget_router.post("/api/v1/ask", response_model=AskResponse)
-async def ask_question(
-    req: AskRequest,
-    tenant: Tenant = Depends(require_tenant),
-):
-    """Ask a natural-language follow-up question about the uploaded data."""
+def _resolve_widget_session(req: AskRequest, tenant: Tenant) -> dict:
+    """Validate session ownership and return the session record.
+
+    Shared by both /api/v1/ask and /api/v1/ask/stream so the session lookup,
+    tenant-isolation check, and session touch are NOT duplicated between the
+    blocking and streaming endpoints. Raises HTTPException on failure.
+    """
     session = _widget_sessions.get(req.session_id)
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -325,6 +327,16 @@ async def ask_question(
         raise HTTPException(status_code=400, detail="No data uploaded in this session yet")
 
     _session_mgr.touch(req.session_id)
+    return session
+
+
+@widget_router.post("/api/v1/ask", response_model=AskResponse)
+async def ask_question(
+    req: AskRequest,
+    tenant: Tenant = Depends(require_tenant),
+):
+    """Ask a natural-language follow-up question about the uploaded data."""
+    session = _resolve_widget_session(req, tenant)
 
     try:
         provider = get_provider()
@@ -346,6 +358,64 @@ async def ask_question(
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+
+@widget_router.post("/api/v1/ask/stream")
+async def ask_question_stream(
+    req: AskRequest,
+    tenant: Tenant = Depends(require_tenant),
+):
+    """Ask a follow-up question, streaming the answer as SSE.
+
+    Reuses the exact same auth/session validation as /api/v1/ask (via
+    _resolve_widget_session + require_tenant). Emits SSE events:
+      data: {"type": "chunk", "text": "..."}      — synthesizer token chunks
+      data: {"type": "final", "data": {...}}       — full structured response
+
+    Note on auth: because EventSource does NOT support custom headers,
+    widget.js uses fetch() + a ReadableStream reader against this endpoint
+    with the X-API-Key header, rather than the EventSource API directly.
+    """
+    session = _resolve_widget_session(req, tenant)
+
+    async def event_generator():
+        try:
+            provider = get_provider()
+            ds = session["ds"]
+            for event in agent_phase2.ask_stream(req.question, ds, provider):
+                if isinstance(event, str):
+                    yield _sse({"type": "chunk", "text": event})
+                else:
+                    # Final structured event — serialize safely (no pandas)
+                    yield _sse({
+                        "type": "final",
+                        "data": {
+                            "answer": event.get("answer", ""),
+                            "confidence": event.get("confidence", "n/a"),
+                            "caveats": event.get("caveats", []),
+                            "lineage": event.get("lineage", {}),
+                        },
+                    })
+        except ConnectionError as e:
+            yield _sse({"type": "error", "message": f"LLM service unavailable: {e}"})
+        except Exception:
+            traceback.print_exc()
+            yield _sse({"type": "error", "message": "Query failed"})
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _sse(payload: dict) -> str:
+    """Serialize a dict as an SSE 'data:' event."""
+    return f"data: {json.dumps(payload, default=str)}\n\n"
 
 
 # ── Session info ─────────────────────────────────────────────────────────

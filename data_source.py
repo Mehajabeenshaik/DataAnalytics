@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -55,6 +56,7 @@ class DataSource:
         self._allowed_filter_columns: list[str] = []
         self._metrics_cache: dict | None = None
         self._pii_masked_columns: set[str] = set()
+        self._instance_id = uuid.uuid4().hex
 
         # Live-connection state (set by connect_live())
         self._is_live = False
@@ -414,6 +416,20 @@ class DataSource:
     def pii_masked_columns(self) -> set[str]:
         """Names of columns that were PII-masked during loading."""
         return self._pii_masked_columns
+
+    @property
+    def dataset_id(self) -> str:
+        """Stable identity for this DataSource INSTANCE.
+
+        Used to scope the response cache (see cache.py) per-session/tenant
+        so two DataSource instances never share a cache entry — even if
+        they happen to hold data with an identical schema (same column
+        names/dtypes/row count but different values — e.g. two tenants
+        both uploading an "order_id, revenue, region" CSV). Assigned once
+        at construction and never changes, matching how api_widget.py
+        already scopes one DataSource per session.
+        """
+        return self._instance_id
 
     def get_metrics(self) -> dict:
         """Return cached metrics, generating them on first access."""

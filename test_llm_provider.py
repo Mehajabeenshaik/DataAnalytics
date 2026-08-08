@@ -1,7 +1,8 @@
 import os
 os.environ["LLM_PROVIDER"] = "ollama"
+os.environ["NVIDIA_API_KEY"] = "test-key"
 
-from llm_provider import get_provider, OllamaProvider, GeminiProvider
+from llm_provider import get_provider, OllamaProvider, GeminiProvider, NvidiaProvider
 
 print("=" * 70)
 print("MODULE 9 TEST: Local LLM Swap (Ollama + Nemotron)")
@@ -341,3 +342,45 @@ class TestGeminiContextCaching:
         assert out == "ok"
         assert client.caches.creations == [], "creation failure -> nothing cached"
         assert client.calls[0]["contents"] == prompt, "fell back to full uncached call"
+
+
+# ── NVIDIA NIM provider ────────────────────────────────────────────────────
+
+class TestNvidiaProvider:
+    def test_provider_name(self):
+        p = NvidiaProvider(api_key="test-key", model="nvidia/test-model")
+        assert p.provider_name() == "nvidia/nvidia/test-model"
+
+    def test_generate_parses_choices(self, monkeypatch):
+        sent = {}
+
+        def fake_post(url, json=None, headers=None, timeout=None):
+            sent["url"] = url
+            sent["json"] = json
+            sent["headers"] = headers
+            sent["timeout"] = timeout
+            resp = type("R", (), {
+                "status_code": 200,
+                "raise_for_status": lambda self: None,
+                "json": lambda self: {"choices": [{"message": {"content": "nvidia-ok"}}]},
+            })()
+            return resp
+
+        monkeypatch.setattr("llm_provider.requests.post", fake_post)
+        p = NvidiaProvider(api_key="test-key", model="nvidia/test-model")
+        out = p.generate("Question: hi", system_prompt="sys")
+        assert out == "nvidia-ok"
+        assert sent["url"] == "https://integrate.api.nvidia.com/v1/chat/completions"
+        assert sent["headers"]["Authorization"] == "Bearer test-key"
+        assert sent["json"]["model"] == "nvidia/test-model"
+        assert sent["json"]["messages"][0]["role"] == "system"
+        assert sent["json"]["messages"][1]["role"] == "user"
+
+    def test_missing_api_key_raises(self):
+        import pytest
+        with pytest.raises(ValueError):
+            NvidiaProvider(api_key="")
+
+    def test_get_provider_returns_nvidia(self):
+        p = get_provider("nvidia")
+        assert isinstance(p, NvidiaProvider)

@@ -18,3 +18,6 @@ os.environ.setdefault(
     "JWT_SECRET_KEY",
     "pytest-test-secret-not-for-production-7f3a9b2e",
 )
+# Provide a test API key so NvidiaProvider() constructs without error in
+# tests that call get_provider("nvidia") or build NvidiaProvider() directly.
+os.environ.setdefault("NVIDIA_API_KEY", "test-key")

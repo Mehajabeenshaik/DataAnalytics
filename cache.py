@@ -32,17 +32,26 @@ def _normalize_question(question: str) -> str:
     return normalized
 
 
-def _make_cache_key(question: str, filters: dict | None) -> str:
-    """Create a deterministic cache key from question + filters."""
+def _make_cache_key(
+    question: str, filters: dict | None, dataset_id: str | None = None
+) -> str:
+    """Create a deterministic cache key from dataset + question + filters.
+
+    dataset_id scopes the cache per-DataSource (see DataSource.dataset_id)
+    so that two different datasets/tenants asking the same normalized
+    question text never collide on the same cache entry.
+    """
     normalized = _normalize_question(question)
     filters_str = json.dumps(filters or {}, sort_keys=True)
-    raw = f"{normalized}|{filters_str}"
+    raw = f"{dataset_id or ''}|{normalized}|{filters_str}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
-def get_cached_response(question: str, filters: dict | None = None) -> dict | None:
-    """Return a cached response for (question, filters), or None if not cached."""
-    key = _make_cache_key(question, filters)
+def get_cached_response(
+    question: str, filters: dict | None = None, dataset_id: str | None = None
+) -> dict | None:
+    """Return a cached response for (dataset_id, question, filters), or None."""
+    key = _make_cache_key(question, filters, dataset_id)
     cached = _cache.get(key)
     if cached is not None:
         cached = dict(cached)
@@ -50,14 +59,19 @@ def get_cached_response(question: str, filters: dict | None = None) -> dict | No
     return cached
 
 
-def set_cached_response(question: str, filters: dict | None, response: dict) -> None:
+def set_cached_response(
+    question: str,
+    filters: dict | None,
+    response: dict,
+    dataset_id: str | None = None,
+) -> None:
     """Store a response in the cache. Skips no_match and already-cached responses."""
     plan_type = response.get("plan", {}).get("plan_type", "")
     if plan_type == "no_match":
         return
     if response.get("cached"):
         return
-    key = _make_cache_key(question, filters)
+    key = _make_cache_key(question, filters, dataset_id)
     to_store = {k: v for k, v in response.items() if k != "cached"}
     _cache[key] = to_store
 
