@@ -563,7 +563,12 @@
         },
         onError: (msg) => {
           hideTyping();
-          botMsg.innerHTML = `<p>❌ ${esc(msg)}</p>`;
+          if (msg.includes("Session not found") || msg.includes("404")) {
+            sessionId = null;
+            botMsg.innerHTML = `<p>⚠️ Session expired or server updated. Please re-upload your file to continue.</p>`;
+          } else {
+            botMsg.innerHTML = `<p>❌ ${esc(msg)}</p>`;
+          }
         },
       });
     } catch (e) {
@@ -577,9 +582,15 @@
         });
         botMsg.innerHTML = renderAnswerHtml(data);
       } catch (e2) {
-        botMsg.innerHTML = `<p>❌ ${esc(e2.message)}</p>`;
+        if (e2.message.includes("Session not found") || e2.message.includes("404")) {
+          sessionId = null;
+          botMsg.innerHTML = `<p>⚠️ Session expired or server updated. Please re-upload your file to continue.</p>`;
+        } else {
+          botMsg.innerHTML = `<p>❌ ${esc(e2.message)}</p>`;
+        }
       }
-    } finally {
+    }
+ finally {
       isAsking = false;
       input.disabled = false;
       sendBtn.disabled = false;
