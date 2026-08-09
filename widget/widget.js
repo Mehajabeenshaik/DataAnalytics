@@ -370,7 +370,13 @@
 
   // ── Render Q&A response ─────────────────────────────────────────────
   function renderAnswerHtml(data) {
-    let html = `<p>${esc(data.answer)}</p>`;
+    let text = esc(data.answer || "");
+    // Convert bold markdown **text** -> <strong>text</strong>
+    text = text.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>");
+    // Convert newlines -> <br>
+    text = text.replace(/\n/g, "<br>");
+
+    let html = `<p>${text}</p>`;
     if (data.confidence && data.confidence !== "n/a") {
       html += `<span class="da-confidence ${data.confidence}">${data.confidence === "high" ? "✓" : "⚠"} ${data.confidence}</span>`;
     }
@@ -379,6 +385,7 @@
     }
     return html;
   }
+
 
   function renderAnswer(data) {
     addMsg(renderAnswerHtml(data));

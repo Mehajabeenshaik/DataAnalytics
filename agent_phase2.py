@@ -533,33 +533,62 @@ def _resolve_question(
         q_lower = question.lower()
         matched_step = None
 
-        # 1. Search metric catalog synonyms & names
-        for m_name, m_info in metrics.items():
-            syns = [m_name.replace("_", " ")] + m_info.get("synonyms", [])
-            if any(syn in q_lower for syn in syns) or (m_info.get("column") in q_lower and (m_info.get("groupby") and m_info.get("groupby") in q_lower)):
-                matched_step = PlanStep(step_id=1, action="run_metric", target=m_name)
-                break
-
-        # 2. Search column pairs for group comparison if not matched.
-        # IMPORTANT: no blind default — falling back to num_cols[0]/cat_cols[0]
-        # when nothing in the question actually matched meant ANY question
-        # (even "what's the weather?") matched the first numeric+categorical
-        # pair in the schema, so plan_type was never really "no_match" for
-        # any dataset with at least one numeric and one categorical column.
-        if not matched_step and ds.profile:
+        if ds.profile:
             num_cols = [c.name for c in ds.profile.columns if c.is_numeric]
             cat_cols = [c.name for c in ds.profile.columns if c.is_categorical]
-            num_match = next((nc for nc in num_cols if nc in q_lower or nc[:-1] in q_lower), None)
-            cat_match = next((cc for cc in cat_cols if cc in q_lower or cc[:-1] in q_lower), None)
-            if num_match and cat_match:
-                m_target = f"{num_match}_by_{cat_match}"
+
+            # Token-level matching for column names (handles typos like 'custmer rating' -> 'customer_rating')
+            def match_column(col_list):
+                for col in col_list:
+                    tokens = col.lower().split("_")
+                    if col in q_lower or any(t in q_lower for t in tokens if len(t) > 3):
+                        return col
+                return None
+
+            num_match = match_column(num_cols)
+            cat_match = match_column(cat_cols)
+            is_avg = any(w in q_lower for w in ["average", "avg", "mean"])
+            is_group = any(w in q_lower for w in ["by", "per", "each", "highest", "lowest", "top", "best", "breakdown"]) or cat_match is not None
+
+            # Priority A: Grouped Breakdown (e.g., sales per region, average rating by category)
+            if is_group and num_match and cat_match:
+                m_target = f"{'avg_' if is_avg else ''}{num_match}_by_{cat_match}"
                 if m_target in metrics:
                     matched_step = PlanStep(step_id=1, action="run_metric", target=m_target)
                 else:
-                    matched_step = PlanStep(step_id=1, action="run_stats", target="group_compare", args={"value_col": num_match, "group_col": cat_match, "agg": "sum"})
+                    matched_step = PlanStep(
+                        step_id=1,
+                        action="run_stats",
+                        target="group_compare",
+                        args={
+                            "value_col": num_match,
+                            "group_col": cat_match,
+                            "agg": "mean" if is_avg else "sum",
+                        },
+                    )
+
+            # Priority B: Global Averages (e.g., average rating, mean sales)
+            elif is_avg and num_match:
+                m_avg = f"avg_{num_match}"
+                if m_avg in metrics:
+                    matched_step = PlanStep(step_id=1, action="run_metric", target=m_avg)
+
+            # Priority C: Metric Catalog exact/synonym match
+            if not matched_step:
+                for m_name, m_info in metrics.items():
+                    syns = [m_name.replace("_", " ")] + m_info.get("synonyms", [])
+                    if any(syn in q_lower for syn in syns):
+                        matched_step = PlanStep(step_id=1, action="run_metric", target=m_name)
+                        break
 
         if matched_step:
-            the_plan = Plan(can_answer=True, reason="Matched metric/tool via schema fallback", plan_type="single_metric" if matched_step.action == "run_metric" else "stats_tool", steps=[matched_step])
+            the_plan = Plan(
+                can_answer=True,
+                reason="Matched metric/tool via schema fallback",
+                plan_type="single_metric" if matched_step.action == "run_metric" else "stats_tool",
+                steps=[matched_step],
+            )
+
         else:
             return None, {
                 "answer": "I don't have a reliable metric or tool that answers this question with the current data.",
