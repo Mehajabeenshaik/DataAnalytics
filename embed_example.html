@@ -22,8 +22,9 @@
             display: flex;
             gap: 10px;
             margin-top: 12px;
+            flex-wrap: wrap;
         }
-        .key-bar input {
+        .key-bar input, .key-bar select {
             flex: 1;
             padding: 10px 14px;
             font-family: monospace;
@@ -72,34 +73,35 @@
         </p>
 
         <div class="card">
-            <h3>🔑 API Key & Widget Configuration</h3>
+            <h3>🔑 Server Target & API Key Configuration</h3>
             <p style="font-size:14px; color:#666; margin-bottom:8px;">
-                The default pre-seeded key <code>ak_demo_key_12345</code> is active by default. You can also paste your own custom key here:
+                Connected to live Render cloud server by default. You can switch between Render and Localhost:
             </p>
             <div class="key-bar">
+                <select id="serverSelect" onchange="updateWidgetKey()">
+                    <option value="https://dataanalytics-9104.onrender.com" selected>Render Cloud (https://dataanalytics-9104.onrender.com)</option>
+                    <option value="http://localhost:8000">Local PC (http://localhost:8000)</option>
+                </select>
                 <input type="text" id="apiKeyInput" value="ak_demo_key_12345" placeholder="Enter API Key (e.g. ak_...)">
-                <button onclick="updateWidgetKey()">Apply Key</button>
+                <button onclick="updateWidgetKey()">Apply</button>
             </div>
-            <div class="status-badge" id="keyStatus">✓ Active Key: ak_demo_key_12345</div>
+            <div class="status-badge" id="keyStatus">✓ Active Server: https://dataanalytics-9104.onrender.com | Key: ak_demo_key_12345</div>
         </div>
 
         <div class="card">
-            <h3>How to Use</h3>
+            <h3>How to Test</h3>
             <ol style="padding-left: 20px; line-height: 2;">
-                <li>Make sure the backend server is running in terminal:
-                    <pre style="background:#eee;padding:8px;margin:8px 0;border-radius:4px;font-size:13px;overflow-x:auto;">cd C:\Users\HP\Documents\DataAnalytics
-python -m uvicorn auth:app --host 0.0.0.0 --port 8000 --reload</pre>
-                </li>
                 <li>Click the <strong>purple chat bubble</strong> at the bottom-right of this page.</li>
-                <li>Drag & drop or upload any CSV / Excel / JSON file into the bot.</li>
+                <li>Drag & drop **sample_sales_data.csv** into the bot upload box.</li>
                 <li>Watch the bot compute baseline analysis automatically, then ask follow-up questions!</li>
             </ol>
         </div>
 
         <div class="card">
-            <h3>HTML Embed Code</h3>
-            <pre id="codeSnippet" style="background:#1e1e2e;color:#cdd6f4;padding:16px;border-radius:6px;font-size:13px;overflow-x:auto;">&lt;script src="http://localhost:8000/widget/widget.js"
+            <h3>HTML Embed Code for Websites</h3>
+            <pre id="codeSnippet" style="background:#1e1e2e;color:#cdd6f4;padding:16px;border-radius:6px;font-size:13px;overflow-x:auto;">&lt;script src="https://dataanalytics-9104.onrender.com/widget/widget.js"
         data-api-key="ak_demo_key_12345"
+        data-api-url="https://dataanalytics-9104.onrender.com"
         data-theme-color="#7c5cfc"&gt;&lt;/script&gt;</pre>
         </div>
     </main>
@@ -110,7 +112,7 @@ python -m uvicorn auth:app --host 0.0.0.0 --port 8000 --reload</pre>
 
     <!-- Interactive script tag loading -->
     <script>
-        function loadWidgetScript(apiKey) {
+        function loadWidgetScript(serverUrl, apiKey) {
             // Remove existing host/script if present
             const oldHost = document.getElementById("da-widget-host");
             if (oldHost) oldHost.remove();
@@ -120,25 +122,27 @@ python -m uvicorn auth:app --host 0.0.0.0 --port 8000 --reload</pre>
             // Create new script tag with specified key
             const script = document.createElement("script");
             script.id = "daWidgetScript";
-            script.src = "http://localhost:8000/widget/widget.js";
+            script.src = serverUrl + "/widget/widget.js";
             script.setAttribute("data-api-key", apiKey);
+            script.setAttribute("data-api-url", serverUrl);
             script.setAttribute("data-theme-color", "#7c5cfc");
             document.body.appendChild(script);
 
             // Update UI feedback
-            document.getElementById("keyStatus").innerText = "✓ Active Key: " + apiKey;
-            document.getElementById("codeSnippet").innerText = `<script src="http://localhost:8000/widget/widget.js"\n        data-api-key="${apiKey}"\n        data-theme-color="#7c5cfc"><\/script>`;
+            document.getElementById("keyStatus").innerText = "✓ Active Server: " + serverUrl + " | Key: " + apiKey;
+            document.getElementById("codeSnippet").innerText = `<script src="${serverUrl}/widget/widget.js"\n        data-api-key="${apiKey}"\n        data-api-url="${serverUrl}"\n        data-theme-color="#7c5cfc"><\/script>`;
         }
 
         function updateWidgetKey() {
+            const server = document.getElementById("serverSelect").value;
             const key = document.getElementById("apiKeyInput").value.trim();
-            if (key) {
-                loadWidgetScript(key);
+            if (server && key) {
+                loadWidgetScript(server, key);
             }
         }
 
-        // Initial load with default key
-        loadWidgetScript("ak_demo_key_12345");
+        // Initial load with default Render live server
+        loadWidgetScript("https://dataanalytics-9104.onrender.com", "ak_demo_key_12345");
     </script>
 </body>
 </html>
