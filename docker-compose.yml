@@ -1,0 +1,15 @@
+version: '3.8'
+
+services:
+  dataanalytics:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - JWT_SECRET_KEY=demo_secret_key_change_in_production_12345
+      - LLM_PROVIDER=ollama
+      - OLLAMA_BASE_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=nemotron-3-nano:4b
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: always
