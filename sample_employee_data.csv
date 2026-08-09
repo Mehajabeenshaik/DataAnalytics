@@ -1,0 +1,11 @@
+employee_id,department,position,salary,experience_years,performance_rating
+EMP-101,Engineering,Senior Engineer,125000,8,4.9
+EMP-102,Engineering,Manager,145000,10,4.7
+EMP-103,Sales,Lead,95000,5,4.5
+EMP-104,Sales,Analyst,68000,3,4.1
+EMP-105,Marketing,Specialist,72000,4,4.3
+EMP-106,Marketing,Manager,115000,9,4.8
+EMP-107,Human Resources,Analyst,62000,2,3.9
+EMP-108,Finance,Manager,138000,11,4.9
+EMP-109,Finance,Analyst,75000,4,4.2
+EMP-110,Engineering,Analyst,82000,3,4.6
