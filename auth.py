@@ -149,7 +149,36 @@ def startup():
 
 
 
+from fastapi.responses import HTMLResponse
+
+@app.get("/", response_class=HTMLResponse)
+async def root():
+    return """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>DaAna Chatbot Service</title>
+        <style>
+            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0e0e16; color: #eee; padding: 40px; max-width: 700px; margin: auto; line-height: 1.6; }
+            h1 { color: #7c5cfc; }
+            pre { background: #1a1a24; padding: 16px; border-radius: 8px; overflow-x: auto; color: #5ce1e6; font-size: 13px; }
+            .badge { display: inline-block; padding: 4px 10px; background: #34d39922; color: #34d399; border-radius: 4px; font-weight: 600; }
+        </style>
+    </head>
+    <body>
+        <h1>📊 DaAna Chatbot Service is Live!</h1>
+        <p><span class="badge">✓ API Service Online</span></p>
+        <p>Your DataAnalytics chatbot backend is running. To embed the widget on any website, add this script tag:</p>
+        <pre>&lt;script src="https://dataanalytics-9104.onrender.com/widget/widget.js"
+        data-api-key="ak_demo_key_12345"
+        data-api-url="https://dataanalytics-9104.onrender.com"
+        data-theme-color="#7c5cfc"&gt;&lt;/script&gt;</pre>
+    </body>
+    </html>
+    """
+
 @app.post("/auth/login", response_model=Token)
+
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     user = _authenticate(form_data.username, form_data.password)
     if not user:
