@@ -539,15 +539,27 @@ class NvidiaProvider(LLMProvider):
             raise
 
 
+class FallbackLLMProvider(LLMProvider):
+    """Fallback provider when primary LLM initialization fails."""
+
+    def provider_name(self) -> str:
+        return "fallback"
+
+    def generate(self, prompt: str, system_prompt: str = "", temperature: float = 0.1) -> str:
+        raise RuntimeError("Primary LLM provider unconfigured or unavailable. Using deterministic fallback.")
+
+
 def get_provider(provider: str | None = None) -> LLMProvider:
     provider = provider or LLM_PROVIDER
-    if provider == "ollama":
-        return OllamaProvider()
-    elif provider == "gemini":
-        return GeminiProvider()
-    elif provider == "nvidia":
-        return NvidiaProvider()
-    else:
-        raise ValueError(
-            f"Unknown LLM provider: '{provider}'. Use 'ollama', 'gemini', or 'nvidia'."
-        )
+    try:
+        if provider == "ollama":
+            return OllamaProvider()
+        elif provider == "gemini":
+            return GeminiProvider()
+        elif provider == "nvidia":
+            return NvidiaProvider()
+        else:
+            return FallbackLLMProvider()
+    except Exception:
+        return FallbackLLMProvider()
+
