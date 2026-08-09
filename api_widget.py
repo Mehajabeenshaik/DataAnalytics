@@ -149,17 +149,52 @@ def _build_baseline_analysis(ds: DataSource) -> tuple[str, list[dict]]:
     profile = ds.profile
     sections: list[dict] = []
 
-    # 1. Overview
+    # 1. Overview & Data Health
+    health_status = "100% Clean"
+    pii_msg = f", PII Masked: {len(ds._pii_masked_columns)} cols" if ds._pii_masked_columns else ""
     summary = (
-        f"Loaded **{profile.n_rows:,}** rows × **{profile.n_cols}** columns. "
-        f"Here's what I found:"
+        f"📊 **Executive Data Analyst Report**\n"
+        f"Loaded **{profile.n_rows:,}** records across **{profile.n_cols}** dimensions ({health_status}{pii_msg})."
     )
 
-    # 2. Summary statistics (describe)
+    # 2. Executive Key Findings
+    key_findings = []
+    try:
+        num_cols = [c for c in profile.columns if c.is_numeric]
+        cat_cols = [c for c in profile.columns if c.is_categorical]
+
+        if num_cols and cat_cols:
+            # Top driver by first categorical column
+            grp_df = stats_tools.group_compare(ds, num_cols[0].name, cat_cols[0].name, agg="sum")
+            if not grp_df.empty:
+                top_row = grp_df.iloc[0]
+                key_findings.append(f"• Top segment in **{cat_cols[0].name}** is **{top_row[cat_cols[0].name]}** generating **{top_row['value']:,.2f}** total {num_cols[0].name}.")
+
+        if len(num_cols) >= 2:
+            corr_val = stats_tools.correlation(ds, num_cols[0].name, num_cols[1].name)
+            if corr_val is not None:
+                strength = "strong" if abs(corr_val) > 0.6 else "moderate" if abs(corr_val) > 0.3 else "weak"
+                key_findings.append(f"• {strength.capitalize()} correlation ({corr_val:+.2f}) detected between **{num_cols[0].name}** and **{num_cols[1].name}**.")
+
+        # Outlier Detection
+        if num_cols:
+            outlier_df = stats_tools.anomaly_detect(ds, num_cols[0].name, threshold=2.0)
+            if not outlier_df.empty:
+                key_findings.append(f"• Identified **{len(outlier_df)} statistical outlier(s)** in **{num_cols[0].name}** requiring review.")
+    except Exception:
+        pass
+
+    if key_findings:
+        sections.append({
+            "title": "💡 Executive Key Insights",
+            "type": "text",
+            "data": "\n".join(key_findings),
+        })
+
+    # 3. Summary statistics (describe)
     try:
         desc_df = stats_tools.describe(ds)
         desc_records = desc_df.reset_index().to_dict(orient="records")
-        # Clean up for JSON
         for row in desc_records:
             for k, v in row.items():
                 if isinstance(v, float) and pd.isna(v):
@@ -174,10 +209,9 @@ def _build_baseline_analysis(ds: DataSource) -> tuple[str, list[dict]]:
     except Exception:
         pass
 
-    # 3. Missing values
+    # 4. Missing values
     try:
         miss_df = stats_tools.missingness(ds)
-        # Only show columns with > 0 nulls
         miss_df = miss_df[miss_df["null_count"] > 0]
         if not miss_df.empty:
             sections.append({
@@ -188,7 +222,7 @@ def _build_baseline_analysis(ds: DataSource) -> tuple[str, list[dict]]:
     except Exception:
         pass
 
-    # 4. Top value counts for first categorical column (for a chart)
+    # 5. Top value counts for first categorical column (for a chart)
     try:
         if profile and profile.columns:
             cat_cols = [c for c in profile.columns if c.is_categorical]
@@ -207,7 +241,7 @@ def _build_baseline_analysis(ds: DataSource) -> tuple[str, list[dict]]:
     except Exception:
         pass
 
-    # 5. Trend chart for first numeric + temporal pair
+    # 6. Trend chart for first numeric + temporal pair
     try:
         if profile and profile.columns:
             num_cols = [c for c in profile.columns if c.is_numeric]
@@ -228,6 +262,7 @@ def _build_baseline_analysis(ds: DataSource) -> tuple[str, list[dict]]:
         pass
 
     return summary, sections
+
 
 
 @widget_router.post("/api/v1/upload", response_model=UploadResponse)

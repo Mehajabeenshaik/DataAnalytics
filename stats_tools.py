@@ -80,7 +80,14 @@ ALLOWED_STATS_TOOLS: list[dict] = [
             "freq": '"M" (month), "W" (week), or "D" (day)',
         },
     },
+    {
+        "name": "anomaly_detect",
+        "description": "Identify statistical outliers or anomalies in a numeric column using Z-score.",
+        "synonyms": ["outliers", "anomalies", "unusual values", "extreme values", "anomaly detection"],
+        "args": {"value_col": "numeric column name", "threshold": "float Z-score threshold, default 2.0"},
+    },
 ]
+
 
 VALID_TOOL_NAMES = {t["name"] for t in ALLOWED_STATS_TOOLS}
 
@@ -308,6 +315,28 @@ def trend(
     return df
 
 
+def anomaly_detect(ds: DataSource, value_col: str, threshold: float = 2.0) -> pd.DataFrame:
+    """Identify statistical outliers/anomalies in a numeric column via Z-score."""
+    _validate_column(ds, value_col)
+    if not _is_numeric(ds, value_col):
+        raise ValueError(f"'{value_col}' is not numeric.")
+
+    df = ds.query(
+        f"""
+        WITH stats AS (
+            SELECT AVG("{value_col}") as mean_val, STDDEV("{value_col}") as std_val
+            FROM {ds.table_name}
+        )
+        SELECT *, ROUND(("{value_col}" - stats.mean_val) / NULLIF(stats.std_val, 0), 2) as z_score
+        FROM {ds.table_name}, stats
+        WHERE ABS(("{value_col}" - stats.mean_val) / NULLIF(stats.std_val, 0)) >= {threshold}
+        ORDER BY ABS(z_score) DESC
+        LIMIT 20
+        """
+    )
+    return df
+
+
 # ── Dispatcher ────────────────────────────────────────────────────────────
 
 
@@ -336,5 +365,7 @@ def run_stats_tool(ds: DataSource, tool_name: str, args: dict) -> Any:
         return missingness(ds, args.get("columns"))
     elif tool_name == "trend":
         return trend(ds, args["date_col"], args["value_col"], args.get("freq", "M"))
+    elif tool_name == "anomaly_detect":
+        return anomaly_detect(ds, args["value_col"], args.get("threshold", 2.0))
     else:
-        raise ValueError(f"Tool '{tool_name}' not implemented.")
+        raise ValueError(f"Tool '{tool_name}' not implemented.")
