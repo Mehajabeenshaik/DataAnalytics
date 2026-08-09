@@ -380,9 +380,13 @@ async def ask_question_stream(
 
     async def event_generator():
         try:
-            provider = get_provider()
+            try:
+                provider = get_provider()
+            except Exception:
+                provider = FallbackLLMProvider()
             ds = session["ds"]
             for event in agent_phase2.ask_stream(req.question, ds, provider):
+
                 if isinstance(event, str):
                     yield _sse({"type": "chunk", "text": event})
                 else:

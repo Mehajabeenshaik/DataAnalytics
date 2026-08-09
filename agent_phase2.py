@@ -458,14 +458,17 @@ def synthesize_stream(
     )
 
     chunks: list[str] = []
-    for chunk in provider.generate_stream(
-        prompt, system_prompt=SYNTHESIZER_SYSTEM, temperature=0.3
-    ):
-        chunks.append(chunk)
-        yield chunk
+    try:
+        for chunk in provider.generate_stream(
+            prompt, system_prompt=SYNTHESIZER_SYSTEM, temperature=0.3
+        ):
+            chunks.append(chunk)
+            yield chunk
+        raw = "".join(chunks)
+        yield _parse_synthesize_response(raw, serializable_results, results)
+    except Exception:
+        yield _parse_synthesize_response("", serializable_results, results)
 
-    raw = "".join(chunks)
-    yield _parse_synthesize_response(raw, serializable_results, results)
 
 
 # ── Top-level entrypoint ─────────────────────────────────────────────────
