@@ -390,6 +390,21 @@ def _format_fallback_answer(serializable_results: list[dict]) -> str:
     parts = []
     for r in serializable_results:
         res = r.get("result")
+
+        # Normalize list of dicts -> dict mapping if possible (e.g. [{'category': 'Electronics', 'sales': 5400.0}])
+        if isinstance(res, list) and res and isinstance(res[0], dict):
+            res_dict = {}
+            for item in res:
+                keys = list(item.keys())
+                if len(keys) >= 2:
+                    cat_val = str(item[keys[0]])
+                    num_val = item[keys[1]]
+                    res_dict[cat_val] = num_val
+                elif len(keys) == 1:
+                    res_dict[str(keys[0])] = list(item.values())[0]
+            if res_dict:
+                res = res_dict
+
         if isinstance(res, dict):
             # Check if dict represents category -> metric mapping
             sorted_items = sorted(
@@ -400,7 +415,7 @@ def _format_fallback_answer(serializable_results: list[dict]) -> str:
             if sorted_items:
                 top_key, top_val = sorted_items[0]
                 val_fmt = f"{top_val:,.2f}" if isinstance(top_val, float) else f"{top_val:,}" if isinstance(top_val, int) else str(top_val)
-                lines = [f"**{top_key}** is the highest with **{val_fmt}**.\n", "Full breakdown:"]
+                lines = [f"**{top_key}** is the highest with **{top_val}**.\n", "Full breakdown:"]
                 for k, v in sorted_items:
                     v_fmt = f"{v:,.2f}" if isinstance(v, float) else f"{v:,}" if isinstance(v, int) else str(v)
                     lines.append(f"• **{k}**: {v_fmt}")
@@ -508,15 +523,7 @@ def _resolve_question(
     ds: DataSource,
     provider: LLMProvider,
 ) -> tuple[Plan | None, dict | None]:
-    """Run plan() + schema-fallback matching + propose-metric flow.
-
-    Shared by ask() and ask_stream() so both delivery paths behave
-    identically. Returns (the_plan, early_response): if the question cannot
-    proceed to synthesis (no_match, propose_metric, or a response-cache hit)
-    early_response is a complete structured response and the_plan is None.
-    """
-    # Check cache first (before any LLM call). Scoped to this DataSource's
-    # identity so different datasets/tenants never share cache entries.
+    """Run plan() + schema-fallback matching + propose-metric flow."""
     cached = get_cached_response(question, dataset_id=ds.dataset_id)
     if cached is not None:
         return None, cached
@@ -527,8 +534,6 @@ def _resolve_question(
         the_plan = Plan(can_answer=False, reason="LLM provider offline", plan_type="no_match")
 
     if not the_plan.can_answer or the_plan.plan_type == "no_match":
-
-        # Fallback: attempt deterministic metric/tool matching against DataSource schema
         metrics = ds.get_metrics()
         q_lower = question.lower()
         matched_step = None
@@ -537,30 +542,55 @@ def _resolve_question(
             num_cols = [c.name for c in ds.profile.columns if c.is_numeric]
             cat_cols = [c.name for c in ds.profile.columns if c.is_categorical]
 
-            # Token-level and stem matching for column names (handles singular/plural like sale <-> sales, region <-> regions)
-            def match_column(col_list):
+            # Match numeric column names or stems
+            def match_num_column():
                 words = q_lower.split()
-                for col in col_list:
+                for col in num_cols:
                     col_lower = col.lower()
                     col_stem = col_lower.rstrip("s")
                     tokens = col_lower.split("_")
                     token_stems = [t.rstrip("s") for t in tokens]
-
                     for w in words:
                         w_stem = w.rstrip("s")
                         if w == col_lower or w_stem == col_stem or w in tokens or w_stem in token_stems:
                             return col
                         if len(w) >= 3 and (w in col_lower or col_lower in w or w_stem in col_stem):
                             return col
-                return None
+                return num_cols[0] if num_cols else None
+
+            # Match categorical column names, stems, or categorical values (e.g. 'clothing', 'electronics')
+            def match_cat_column():
+                words = q_lower.split()
+                prof_cols_map = {c.name: c for c in ds.profile.columns} if ds.profile else {}
+                for col in cat_cols:
+                    col_lower = col.lower()
+                    col_stem = col_lower.rstrip("s")
+                    tokens = col_lower.split("_")
+                    token_stems = [t.rstrip("s") for t in tokens]
+                    for w in words:
+                        w_stem = w.rstrip("s")
+                        if w == col_lower or w_stem == col_stem or w in tokens or w_stem in token_stems:
+                            return col
+                        if len(w) >= 3 and (w in col_lower or col_lower in w or w_stem in col_stem):
+                            return col
+
+                    # Check categorical value examples (e.g., 'clothing' or 'electronics' matching category column)
+                    p_col = prof_cols_map.get(col)
+                    if p_col and hasattr(p_col, "examples") and p_col.examples:
+                        ex_set = {str(ex).lower() for ex in p_col.examples}
+                        if any(w in ex_set or w.rstrip("s") in ex_set for w in words):
+                            return col
 
 
-            num_match = match_column(num_cols)
-            cat_match = match_column(cat_cols)
+                return cat_cols[0] if cat_cols else None
+
+
+            num_match = match_num_column()
+            cat_match = match_cat_column()
             is_avg = any(w in q_lower for w in ["average", "avg", "mean"])
-            is_group = any(w in q_lower for w in ["by", "per", "each", "highest", "lowest", "top", "best", "breakdown"]) or cat_match is not None
+            is_group = any(w in q_lower for w in ["by", "per", "each", "highest", "lowest", "top", "best", "breakdown", "compare", "vs", "versus", "between", "difference"]) or (cat_match is not None and any(w in q_lower for w in ["compare", "vs", "between"]))
 
-            # Priority A: Grouped Breakdown (e.g., sales per region, average rating by category)
+            # Priority A: Grouped Breakdown / Comparison (e.g., sales per region, compare sales between clothing and electronics)
             if is_group and num_match and cat_match:
                 m_target = f"{'avg_' if is_avg else ''}{num_match}_by_{cat_match}"
                 if m_target in metrics:
