@@ -537,13 +537,23 @@ def _resolve_question(
             num_cols = [c.name for c in ds.profile.columns if c.is_numeric]
             cat_cols = [c.name for c in ds.profile.columns if c.is_categorical]
 
-            # Token-level matching for column names (handles typos like 'custmer rating' -> 'customer_rating')
+            # Token-level and stem matching for column names (handles singular/plural like sale <-> sales, region <-> regions)
             def match_column(col_list):
+                words = q_lower.split()
                 for col in col_list:
-                    tokens = col.lower().split("_")
-                    if col in q_lower or any(t in q_lower for t in tokens if len(t) > 3):
-                        return col
+                    col_lower = col.lower()
+                    col_stem = col_lower.rstrip("s")
+                    tokens = col_lower.split("_")
+                    token_stems = [t.rstrip("s") for t in tokens]
+
+                    for w in words:
+                        w_stem = w.rstrip("s")
+                        if w == col_lower or w_stem == col_stem or w in tokens or w_stem in token_stems:
+                            return col
+                        if len(w) >= 3 and (w in col_lower or col_lower in w or w_stem in col_stem):
+                            return col
                 return None
+
 
             num_match = match_column(num_cols)
             cat_match = match_column(cat_cols)
