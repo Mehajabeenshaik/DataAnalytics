@@ -428,8 +428,12 @@ def synthesize(
     prompt, serializable_results, results = _build_synthesize_prompt(
         question, the_plan, results
     )
-    raw = provider.generate(prompt, system_prompt=SYNTHESIZER_SYSTEM, temperature=0.3)
-    return _parse_synthesize_response(raw, serializable_results, results)
+    try:
+        raw = provider.generate(prompt, system_prompt=SYNTHESIZER_SYSTEM, temperature=0.3)
+        return _parse_synthesize_response(raw, serializable_results, results)
+    except Exception:
+        return _parse_synthesize_response("", serializable_results, results)
+
 
 
 def synthesize_stream(
@@ -484,9 +488,13 @@ def _resolve_question(
     if cached is not None:
         return None, cached
 
-    the_plan = plan(question, ds, provider)
+    try:
+        the_plan = plan(question, ds, provider)
+    except Exception:
+        the_plan = Plan(can_answer=False, reason="LLM provider offline", plan_type="no_match")
 
     if not the_plan.can_answer or the_plan.plan_type == "no_match":
+
         # Fallback: attempt deterministic metric/tool matching against DataSource schema
         metrics = ds.get_metrics()
         q_lower = question.lower()
