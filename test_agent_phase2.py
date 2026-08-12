@@ -77,6 +77,47 @@ def test_plan_single_metric(ds):
     assert the_plan.steps[0].target == first_metric
 
 
+# ── Guided-decoding schema wiring ───────────────────────────────────────────
+
+def test_plan_sets_guided_schema_on_supporting_provider(ds):
+    """A provider exposing guided_json_schema (i.e. VLLMProvider) must get
+    a live schema built from the current catalog before generate() is called.
+    """
+    metrics = ds.get_metrics()
+    first_metric = list(metrics.keys())[0]
+    provider = make_mock_provider({
+        "can_answer": True, "reason": "ok", "plan_type": "single_metric",
+        "steps": [{"step_id": 1, "action": "run_metric", "target": first_metric, "filters": {}, "args": {}}],
+    })
+    provider.guided_json_schema = None  # simulate a VLLMProvider before plan() runs
+
+    plan("What is total revenue?", ds, provider)
+
+    assert provider.guided_json_schema is not None
+    schema = provider.guided_json_schema
+    assert first_metric in schema["properties"]["steps"]["items"]["properties"]["target"]["enum"]
+    assert "run_metric" in schema["properties"]["steps"]["items"]["properties"]["action"]["enum"]
+    assert schema["properties"]["steps"]["maxItems"] == 3
+
+
+def test_plan_does_not_touch_providers_without_guided_schema_attr(ds):
+    """Ollama/Gemini/Nvidia providers have no guided_json_schema attribute —
+    plan() must not add one or otherwise special-case them.
+    """
+    metrics = ds.get_metrics()
+    first_metric = list(metrics.keys())[0]
+    provider = MagicMock(spec=["generate", "provider_name"])  # no guided_json_schema attr
+    provider.generate.return_value = json.dumps({
+        "can_answer": True, "reason": "ok", "plan_type": "single_metric",
+        "steps": [{"step_id": 1, "action": "run_metric", "target": first_metric, "filters": {}, "args": {}}],
+    })
+
+    the_plan = plan("What is total revenue?", ds, provider)
+
+    assert the_plan.can_answer is True
+    assert not hasattr(provider, "guided_json_schema")
+
+
 def test_plan_stats_tool(ds):
     provider = make_mock_provider({
         "can_answer": True,

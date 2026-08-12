@@ -2,7 +2,7 @@ import os
 os.environ["LLM_PROVIDER"] = "ollama"
 os.environ["NVIDIA_API_KEY"] = "test-key"
 
-from llm_provider import get_provider, OllamaProvider, GeminiProvider, NvidiaProvider
+from llm_provider import get_provider, OllamaProvider, GeminiProvider, NvidiaProvider, VLLMProvider
 
 print("=" * 70)
 print("MODULE 9 TEST: Local LLM Swap (Ollama + Nemotron)")
@@ -145,6 +145,38 @@ class TestOllamaPromptOrder:
         # Ordering: system message before user message.
         assert body["messages"][0]["role"] == "system"
         assert body["messages"][1]["role"] == "user"
+
+    def test_ollama_generate_stream_parses_ndjson_chunks(self, monkeypatch):
+        """Regression test: generate_stream() must not crash on real Ollama
+        streamed NDJSON lines (previously failed with NameError: json not
+        imported)."""
+        import json as _json
+
+        lines = [
+            _json.dumps({"message": {"content": "Hel"}, "done": False}),
+            _json.dumps({"message": {"content": "lo"}, "done": False}),
+            _json.dumps({"message": {"content": ""}, "done": True}),
+        ]
+
+        class FakeResponse:
+            status_code = 200
+            def raise_for_status(self):
+                pass
+            def iter_lines(self, decode_unicode=True):
+                return iter(lines)
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        def fake_post(url, json=None, stream=None, timeout=None):
+            return FakeResponse()
+
+        monkeypatch.setattr("llm_provider.requests.post", fake_post)
+
+        p = OllamaProvider(base_url="http://fake", model="test-model")
+        chunks = list(p.generate_stream("Question: hi", system_prompt="sys"))
+        assert chunks == ["Hel", "lo"]
 
 
 # ── Gemini: explicit context-cache behavior (mocked google.genai) ──────────
@@ -384,3 +416,71 @@ class TestNvidiaProvider:
     def test_get_provider_returns_nvidia(self):
         p = get_provider("nvidia")
         assert isinstance(p, NvidiaProvider)
+
+
+# ── Self-hosted vLLM provider ───────────────────────────────────────────────
+
+class TestVLLMProvider:
+    def test_provider_name(self):
+        p = VLLMProvider(base_url="http://localhost:8000/v1", model="test-model")
+        assert p.provider_name() == "vllm/test-model"
+
+    def test_no_api_key_required(self):
+        # Unlike Nvidia/Gemini, a local vLLM server has no key by default.
+        p = VLLMProvider(base_url="http://localhost:8000/v1", model="test-model")
+        assert p.api_key == ""
+
+    def test_generate_parses_choices(self, monkeypatch):
+        sent = {}
+
+        def fake_post(url, json=None, headers=None, timeout=None):
+            sent["url"] = url
+            sent["json"] = json
+            sent["headers"] = headers
+            sent["timeout"] = timeout
+            resp = type("R", (), {
+                "status_code": 200,
+                "raise_for_status": lambda self: None,
+                "json": lambda self: {"choices": [{"message": {"content": "vllm-ok"}}]},
+            })()
+            return resp
+
+        monkeypatch.setattr("llm_provider.requests.post", fake_post)
+        p = VLLMProvider(base_url="http://localhost:8000/v1", model="test-model")
+        out = p.generate("Question: hi", system_prompt="sys")
+        assert out == "vllm-ok"
+        assert sent["url"] == "http://localhost:8000/v1/chat/completions"
+        assert "Authorization" not in sent["headers"], "no key configured -> no auth header"
+        assert sent["json"]["model"] == "test-model"
+        assert "extra_body" not in sent["json"], "no schema configured -> no guided_json sent"
+
+    def test_guided_json_schema_sent_as_extra_body(self, monkeypatch):
+        sent = {}
+
+        def fake_post(url, json=None, headers=None, timeout=None):
+            sent["json"] = json
+            resp = type("R", (), {
+                "status_code": 200,
+                "raise_for_status": lambda self: None,
+                "json": lambda self: {"choices": [{"message": {"content": "ok"}}]},
+            })()
+            return resp
+
+        monkeypatch.setattr("llm_provider.requests.post", fake_post)
+        schema = {"type": "object", "properties": {"action": {"type": "string"}}}
+        p = VLLMProvider(base_url="http://localhost:8000/v1", model="m", guided_json_schema=schema)
+        p.generate("Question: hi")
+        assert sent["json"]["extra_body"] == {"guided_json": schema}
+
+    def test_connection_error_message_is_actionable(self, monkeypatch):
+        def fake_post(*a, **k):
+            raise __import__("requests").ConnectionError()
+
+        monkeypatch.setattr("llm_provider.requests.post", fake_post)
+        p = VLLMProvider(base_url="http://localhost:8000/v1", model="m")
+        with pytest.raises(ConnectionError, match="vllm serve"):
+            p.generate("hi")
+
+    def test_get_provider_returns_vllm(self):
+        p = get_provider("vllm")
+        assert isinstance(p, VLLMProvider)

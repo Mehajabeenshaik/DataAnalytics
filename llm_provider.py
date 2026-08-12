@@ -1,5 +1,6 @@
 import abc
 import hashlib
+import json
 import logging
 import time
 import requests
@@ -7,6 +8,7 @@ from config import (
     LLM_PROVIDER, GEMINI_API_KEY,
     OLLAMA_BASE_URL, OLLAMA_MODEL, SESSION_TIMEOUT_MINUTES,
     NVIDIA_API_KEY, NVIDIA_BASE_URL, NVIDIA_MODEL,
+    VLLM_BASE_URL, VLLM_MODEL, VLLM_API_KEY,
 )
 
 logger = logging.getLogger(__name__)
@@ -539,6 +541,90 @@ class NvidiaProvider(LLMProvider):
             raise
 
 
+class VLLMProvider(LLMProvider):
+    """Self-hosted vLLM server — OpenAI-compatible /chat/completions endpoint.
+
+    Structurally identical to NvidiaProvider (both speak the OpenAI chat API),
+    with one addition: an optional guided_json_schema that, when set, forces
+    vLLM's guided-decoding backend (outlines/xgrammar) to constrain every
+    generate() call's output to that JSON schema. This is what lets plan()'s
+    catalog-selection output be *structurally* guaranteed valid, not just
+    validated after the fact.
+
+    Run a server first:  vllm serve <model> --port 8000
+    Docs: https://docs.vllm.ai/en/latest/serving/openai_compatible_server.html
+    """
+
+    def __init__(
+        self,
+        base_url: str = VLLM_BASE_URL,
+        model: str = VLLM_MODEL,
+        api_key: str = VLLM_API_KEY,
+        guided_json_schema: dict | None = None,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.model = model
+        self.api_key = api_key
+        self.guided_json_schema = guided_json_schema
+
+    def provider_name(self) -> str:
+        return f"vllm/{self.model}"
+
+    def is_available(self) -> bool:
+        try:
+            r = requests.get(f"{self.base_url}/models", timeout=3)
+            return r.status_code == 200
+        except requests.ConnectionError:
+            return False
+
+    def generate(self, prompt: str, system_prompt: str = "", temperature: float = 0.1) -> str:
+        messages = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+        messages.append({"role": "user", "content": prompt})
+
+        payload = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": 400,
+            "stream": False,
+        }
+        # vLLM-specific structured-output constraint, passed through
+        # extra_body per the OpenAI-compatible server's documented
+        # extension point. Only added when a schema was configured, so
+        # this provider behaves identically to a plain chat endpoint
+        # until agent_phase2.py is updated to supply one.
+        if self.guided_json_schema is not None:
+            payload["extra_body"] = {"guided_json": self.guided_json_schema}
+
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        try:
+            r = requests.post(
+                f"{self.base_url}/chat/completions",
+                json=payload,
+                headers=headers,
+                timeout=300,
+            )
+            r.raise_for_status()
+            return r.json()["choices"][0]["message"]["content"]
+        except requests.ConnectionError:
+            raise ConnectionError(
+                f"Cannot connect to vLLM server at {self.base_url}. "
+                f"Start it with: vllm serve {self.model} --port 8000"
+            )
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 404:
+                raise RuntimeError(
+                    f"Model '{self.model}' not found on vLLM server. "
+                    "Check the model name matches what `vllm serve` was started with."
+                )
+            raise
+
+
 class FallbackLLMProvider(LLMProvider):
     """Fallback provider when primary LLM initialization fails."""
 
@@ -558,8 +644,9 @@ def get_provider(provider: str | None = None) -> LLMProvider:
             return GeminiProvider()
         elif provider == "nvidia":
             return NvidiaProvider()
+        elif provider == "vllm":
+            return VLLMProvider()
         else:
             return FallbackLLMProvider()
     except Exception:
         return FallbackLLMProvider()
-

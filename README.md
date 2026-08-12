@@ -61,8 +61,8 @@ Question in
 - `cache.py` — TTL-based response cache so repeated questions skip the LLM entirely
 - `pii_masker.py` + `encryption.py` — Presidio-based PII detection, masked at load
   time, with a Fernet-encrypted vault for original values
-- `llm_provider.py` — pluggable LLM backend: **Ollama (local, default)**, Gemini, or
-  NVIDIA NIM — swap via one env var
+- `llm_provider.py` — pluggable LLM backend: **Ollama (local, default)**, Gemini,
+  NVIDIA NIM, or self-hosted vLLM — swap via one env var
 
 ---
 
@@ -166,6 +166,7 @@ see `test_data_source_realtime.py` for the pattern, and confirm it against a gen
 | Ollama (local) | `ollama` | No | Default. `OLLAMA_MODEL=nemotron-3-nano:4b` |
 | Google Gemini | `gemini` | Yes — `GEMINI_API_KEY` | Free tier at aistudio.google.com |
 | NVIDIA NIM | `nvidia` | Yes — `NVIDIA_API_KEY` | Cloud-hosted Nemotron/DeepSeek/Qwen catalog |
+| Self-hosted vLLM | `vllm` | No (unless behind auth proxy) | `vllm serve <model> --port 8000`; optional `guided_json` schema for deterministic structured output |
 
 Switching providers never requires code changes — only `.env`.
 
@@ -206,7 +207,7 @@ installed** — re-run step 1 of Quick Start. A skipped PII test is not a passin
 | `test_data_source_pii.py` | PII masking on data load — must show PASSED, not SKIPPED |
 | `test_data_source_realtime.py` | Live-mode caching, TTL expiry, static-mode regression |
 | `test_pii_masker.py` / `test_encryption.py` | PII vault + encryption at rest |
-| `test_llm_provider.py` | Provider selection across Ollama/Gemini/NVIDIA |
+| `test_llm_provider.py` | Provider selection across Ollama/Gemini/NVIDIA/vLLM |
 
 ---
 
@@ -220,7 +221,7 @@ installed** — re-run step 1 of Quick Start. A skipped PII test is not a passin
 | `data_source.py` | Loads/profiles static data; supports live DB connections |
 | `stats_tools.py` | Deterministic statistics tools |
 | `cache.py` | TTL response cache to skip redundant LLM calls |
-| `llm_provider.py` | Ollama / Gemini / NVIDIA NIM provider abstraction |
+| `llm_provider.py` | Ollama / Gemini / NVIDIA NIM / vLLM provider abstraction |
 | `pii_masker.py` | Presidio-based PII masking + encrypted vault |
 | `encryption.py` | Fernet encryption wrapper for databases at rest |
 | `auth.py` / `auth_middleware.py` | FastAPI JWT auth, admin/viewer RBAC |

@@ -31,6 +31,13 @@ NVIDIA_MODEL = os.getenv("NVIDIA_MODEL", "nvidia/llama-3.1-nemotron-super-49b-v1
 # degrades sharply below ~7B parameters or without code fine-tuning.
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "nemotron-3-nano:4b")
 
+# Self-hosted vLLM server settings — only needed if LLM_PROVIDER=vllm
+# Serve your own OpenAI-compatible endpoint with:
+#   vllm serve meta-llama/Llama-3.1-8B-Instruct --port 8000
+VLLM_BASE_URL = os.getenv("VLLM_BASE_URL", "http://localhost:8000/v1")
+VLLM_MODEL = os.getenv("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+VLLM_API_KEY = os.getenv("VLLM_API_KEY", "")
+
 CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "300"))
 
 _JWT_SECRET_DEFAULT_SENTINEL = "change-this-in-production-use-secrets-token"

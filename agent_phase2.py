@@ -194,6 +194,62 @@ class MetricProposal(BaseModel):
     risk: str = "low"
 
 
+# ── Guided-decoding schema (vLLM structured output) ────────────────────────
+
+def _build_planner_json_schema(metric_names: list[str], tool_names: list[str]) -> dict:
+    """JSON Schema mirroring the Plan/PlanStep pydantic models above, but with
+    live enum constraints so a guided-decoding backend (vLLM's guided_json)
+    can make it *structurally impossible* for the planner to emit a target
+    outside the current catalog — not just checked after the fact by the
+    validation loop in plan() below, which remains as defense-in-depth.
+
+    target's enum is the union of metric + tool names rather than being
+    conditional on action, because plain JSON Schema can't express "enum A
+    if action=X else enum B" without oneOf/allOf branching that some guided-
+    decoding backends handle inconsistently. The existing post-generation
+    checks in plan() (metric_names / VALID_TOOL_NAMES) still enforce the
+    action-target pairing correctly; this schema's job is only to shrink
+    the space of plausible mistakes, not to duplicate that logic.
+    """
+    targets = sorted(set(metric_names) | set(tool_names))
+    return {
+        "type": "object",
+        "properties": {
+            "can_answer": {"type": "boolean"},
+            "reason": {"type": "string"},
+            "plan_type": {
+                "type": "string",
+                "enum": ["single_metric", "stats_tool", "multi_step", "propose_metric", "no_match"],
+            },
+            "steps": {
+                "type": "array",
+                "maxItems": 3,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "step_id": {"type": "integer"},
+                        "action": {"type": "string", "enum": ["run_metric", "run_stats"]},
+                        "target": {"type": "string", "enum": targets} if targets else {"type": "string"},
+                        "filters": {"type": "object"},
+                        "args": {"type": "object"},
+                    },
+                    "required": ["action", "target"],
+                },
+            },
+        },
+        "required": ["can_answer", "reason", "plan_type", "steps"],
+    }
+
+
+def _apply_guided_schema(provider: LLMProvider, schema: dict) -> None:
+    """Set guided_json_schema on the provider if it supports it (currently
+    only VLLMProvider). No-op for providers without that attribute — this
+    keeps plan() provider-agnostic rather than branching on isinstance.
+    """
+    if hasattr(provider, "guided_json_schema"):
+        provider.guided_json_schema = schema
+
+
 # ── Step 1: Planner (LLM call #1) ─────────────────────────────────────────
 
 def plan(
@@ -222,6 +278,14 @@ def plan(
         f"Available metrics:\n{json.dumps(catalog, indent=2)}\n\n"
         f"Available statistical tools:\n{json.dumps(tools_catalog, indent=2)}\n\n"
         f"Question: {question}"
+    )
+
+    _apply_guided_schema(
+        provider,
+        _build_planner_json_schema(
+            metric_names=list(metrics.keys()),
+            tool_names=[t["name"] for t in tools_catalog],
+        ),
     )
 
     raw = provider.generate(prompt, system_prompt=PLANNER_SYSTEM, temperature=0.05)
@@ -770,6 +834,6 @@ def ask_stream(
     }
 
     # Cache the response for future repeated questions (same as ask())
-    set_cached_response(question, None, response)
+    set_cached_response(question, None, response, dataset_id=ds.dataset_id)
 
     yield response
