@@ -30,6 +30,9 @@ from agent_core import run_metric
 from stats_tools import ALLOWED_STATS_TOOLS, VALID_TOOL_NAMES, run_stats_tool
 from llm_provider import LLMProvider
 from cache import get_cached_response, set_cached_response, clear_cache
+from catalog.service import CatalogService
+from catalog.models import MetricDefinition as CatalogMetricDefinition
+from catalog.models import MetricProposal as CatalogMetricProposal
 
 
 # ── PII defense-in-depth ──────────────────────────────────────────────────
@@ -257,7 +260,13 @@ def plan(
     ds: DataSource,
     provider: LLMProvider,
 ) -> Plan:
-    metrics = ds.get_metrics()
+    # Governed catalog: only APPROVED metrics are visible to the LLM planner.
+    # Backward-compatible fallback: if the catalog hasn't been seeded yet,
+    # use the legacy in-memory auto-generated metrics so existing callers
+    # (and tests) that don't seed the catalog keep working unchanged.
+    catalog_service = CatalogService()
+    approved = catalog_service.get_approved_metrics()
+    metrics = approved if approved else ds.get_metrics()
     catalog = get_metric_catalog_for_llm(metrics)
     schema_card = ds.get_schema_card()
     allowed_filters = ds.allowed_filter_columns
@@ -751,10 +760,48 @@ def _resolve_question(
 
     if the_plan.plan_type == "propose_metric":
         proposal = propose_metric(question, ds, provider)
+        if proposal.can_propose:
+            # Persist the proposal into the governed catalog for human review.
+            # It stays "pending" until a human approves it via the CLI or API.
+            catalog_service = CatalogService()
+            catalog_proposal = CatalogMetricProposal(
+                metric=CatalogMetricDefinition(
+                    name=proposal.proposed_name,
+                    synonyms=proposal.synonyms,
+                    description=proposal.description,
+                    column=proposal.column,
+                    agg=proposal.agg,
+                    groupby=proposal.groupby,
+                    base_filters=proposal.base_filters,
+                    status="pending",
+                    source="proposed",
+                    risk=proposal.risk,
+                    created_by="agent",
+                ),
+                question=question,
+                reason=proposal.why_needed,
+                proposed_by="agent",
+            )
+            proposal_id = catalog_service.propose(catalog_proposal)
+            return None, {
+                "answer": "This question needs a new metric. I've submitted a proposal for human approval.",
+                "confidence": "n/a",
+                "caveats": ["Proposed metric requires human approval before it can be used."],
+                "lineage": {
+                    "metrics_or_tools_used": [],
+                    "filters_applied": {},
+                    "notes": "propose_metric flow",
+                },
+                "plan": the_plan.model_dump(),
+                "results": [],
+                "proposal": proposal.model_dump(),
+                "proposal_id": proposal_id,
+                "proposal_status": "pending",
+            }
         return None, {
-            "answer": "This question needs a new metric. I've drafted a proposal for your review.",
+            "answer": "I couldn't draft a safe metric proposal for this question.",
             "confidence": "n/a",
-            "caveats": ["Proposed metric requires human approval before use."],
+            "caveats": [proposal.reason or "No safe metric could be proposed."],
             "lineage": {
                 "metrics_or_tools_used": [],
                 "filters_applied": {},

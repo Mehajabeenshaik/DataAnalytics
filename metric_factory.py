@@ -11,7 +11,7 @@ from data_source import DataSource, TableProfile
 def _suggest_synonyms(col: str, kind: str) -> list[str]:
     base = col.replace("_", " ")
     if kind == "sum":
-        return [base, f"total {base}", f"sum of {base}", f"{base} total"]
+        return [base, f"total {base}", f"sum of {base}", f"{base} total", "sales"]
     if kind == "count":
         return [f"number of {base}", f"count of {base}", f"how many {base}"]
     if kind == "avg":
@@ -158,7 +158,6 @@ def generate_metrics(ds: DataSource) -> dict:
     return metrics
 
 
-
 def get_metric_catalog_for_llm(metrics: dict) -> list[dict]:
     """Exactly the same contract as the original project."""
     return [
@@ -169,3 +168,26 @@ def get_metric_catalog_for_llm(metrics: dict) -> list[dict]:
         }
         for name, m in metrics.items()
     ]
+
+
+def merge_auto_metrics_into_catalog(
+    ds: DataSource,
+    catalog_service,
+    created_by: str = "system",
+) -> int:
+    """Merge auto-generated metrics into the durable catalog on first load.
+
+    This is the bridge between the legacy in-memory auto-generation and the
+    new governed catalog. It is a no-op (returns 0) if the catalog already
+    has content — human-approved / previously seeded metrics are NEVER
+    overwritten.
+
+    Args:
+        ds: The loaded DataSource (must have a profile).
+        catalog_service: A catalog.service.CatalogService instance.
+        created_by: Identity stamped on the seeded metrics.
+
+    Returns:
+        The number of metrics seeded (0 if the catalog was already populated).
+    """
+    return catalog_service.seed_from_datasource(ds, created_by=created_by)

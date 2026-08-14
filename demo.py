@@ -18,6 +18,8 @@ from data_source import DataSource
 from agent_phase2 import ask
 from llm_provider import get_provider
 from config import LLM_PROVIDER
+from catalog.service import CatalogService
+from metric_factory import merge_auto_metrics_into_catalog
 
 
 def run_demo():
@@ -62,9 +64,17 @@ def run_demo():
         ds.load_sqlite(path, table)
         print(f"Loaded: {ds.profile.n_rows} rows x {ds.profile.n_cols} cols")
 
+    # Seed the governed catalog on first load (auto metrics become approved).
+    catalog = CatalogService()
+    seeded = merge_auto_metrics_into_catalog(ds, catalog)
+    if seeded:
+        print(f"Seeded {seeded} auto metrics into the governed catalog.")
+    else:
+        print("Catalog already populated — using existing approved metrics.")
+
     print()
     print(f"Schema: {ds.get_schema_card()[:200]}...")
-    print(f"Metrics: {len(ds.get_metrics())} available")
+    print(f"Approved metrics: {len(catalog.get_approved_metrics())} available")
     print()
     print("Type a question in plain English (or 'quit' to exit).")
     print()

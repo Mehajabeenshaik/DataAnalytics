@@ -20,3 +20,8 @@ __pycache__/
 # ── Evaluation output logs ─────────────────────────────────────────
 # Eval result logs are historical artifacts — regenerate, don't commit.
 eval/results*.txt
+
+# ── Runtime metric catalog data ────────────────────────────────────
+# data/catalog/ is generated at runtime (seeded metrics, proposals,
+# version history). Regenerate it — don't commit runtime state.
+data/catalog/
