@@ -43,12 +43,12 @@ ALLOWED_STATS_TOOLS: list[dict] = [
         "description": "Frequency table of a categorical column.",
         "synonyms": [
             "value counts",
+            "distribution of",
             "how many of each",
             "breakdown of values",
-            "distribution of",
-            "frequency table",
             "count of each value",
             "frequency of values",
+            "frequency table",
         ],
         "args": {"column": "column name", "top_n": "int, default 10"},
     },
@@ -74,6 +74,14 @@ ALLOWED_STATS_TOOLS: list[dict] = [
     {
         "name": "trend",
         "description": "Time aggregation of a numeric column by date period.",
+        "synonyms": [
+            "time series",
+            "trend over time",
+            "values over time",
+            "historical trend",
+            "time progression",
+            "trend",
+        ],
         "args": {
             "date_col": "date/time column name",
             "value_col": "numeric column name",
@@ -93,7 +101,6 @@ VALID_TOOL_NAMES = {t["name"] for t in ALLOWED_STATS_TOOLS}
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────
-
 
 def _validate_column(ds: DataSource, col: str) -> str:
     """Return the column name if it exists in the profile, else raise ValueError."""
@@ -339,7 +346,6 @@ def anomaly_detect(ds: DataSource, value_col: str, threshold: float = 2.0) -> pd
 
 # ── Dispatcher ────────────────────────────────────────────────────────────
 
-
 def run_stats_tool(ds: DataSource, tool_name: str, args: dict) -> Any:
     """Dispatch to the named stats tool. Validates tool name and column args.
 
@@ -368,4 +374,4 @@ def run_stats_tool(ds: DataSource, tool_name: str, args: dict) -> Any:
     elif tool_name == "anomaly_detect":
         return anomaly_detect(ds, args["value_col"], args.get("threshold", 2.0))
     else:
-        raise ValueError(f"Tool '{tool_name}' not implemented.")
+        raise ValueError(f"Tool '{tool_name}' not implemented.")

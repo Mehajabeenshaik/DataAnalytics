@@ -49,27 +49,58 @@ def _make_eval_ds() -> DataSource:
 # ─────────────────────────────────────────────────────────────────────────
 
 GOLDEN_SET = [
-    # ── Happy path: should route to a metric or stats tool ──
-    ("What is the total revenue?",                    "single_metric"),
-    ("How much revenue have we made?",                 "single_metric"),
-    ("What are our total sales?",                      "single_metric"),
-    ("How many orders have we received?",             "single_metric"),
-    ("What is the order count?",                       "single_metric"),
-    ("Show me revenue by region",                     "single_metric"),
-    ("Revenue per region",                            "single_metric"),
-    ("Show me revenue by category",                   "single_metric"),
-    ("Category breakdown of revenue",                "single_metric"),
-    ("Describe the data",                             "stats_tool"),
-    ("What are the summary statistics?",              "stats_tool"),
-    ("Show me value counts for region",               "stats_tool"),
-    ("What is the correlation between revenue and quantity?", "stats_tool"),
+    # ── Revenue & sales metrics ──
+    ("What is the total revenue?",                          "single_metric"),
+    ("How much revenue have we made?",                      "single_metric"),
+    ("What are our total sales?",                           "single_metric"),
+    ("Show me total revenue",                               "single_metric"),
+    ("Calculate overall revenue",                           "single_metric"),
 
-    # ── No-match: should decline gracefully ──
-    ("What's the weather today?",                     "no_match"),
-    ("Tell me a joke",                                "no_match"),
-    ("What is the meaning of life?",                  "no_match"),
-    ("Who won the World Cup?",                        "no_match"),
-    ("What's the stock price of Apple?",              "no_match"),
+    # ── Counts ──
+    ("How many orders have we received?",                   "single_metric"),
+    ("What is the order count?",                            "single_metric"),
+    ("How many orders are there?",                          "single_metric"),
+    ("Total number of orders",                              "single_metric"),
+
+    # ── Breakdowns ──
+    ("Show me revenue by region",                           "single_metric"),
+    ("Revenue per region",                                  "single_metric"),
+    ("Break down revenue by region",                        "single_metric"),
+    ("Show me revenue by category",                         "single_metric"),
+    ("Category breakdown of revenue",                       "single_metric"),
+    ("Revenue by category",                                 "single_metric"),
+
+    # ── Averages / other metrics ──
+    ("What is the average revenue?",                        "single_metric"),
+    ("What is the average order value?",                    "single_metric"),
+    ("Average quantity per order",                          "single_metric"),
+
+    # ── Stats tools ──
+    ("Describe the data",                                   "stats_tool"),
+    ("What are the summary statistics?",                    "stats_tool"),
+    ("Give me a statistical summary",                       "stats_tool"),
+    ("Show me value counts for region",                     "stats_tool"),
+    ("How many orders per region?",                         "stats_tool"),
+    ("Distribution of categories",                          "stats_tool"),
+    ("What is the correlation between revenue and quantity?", "stats_tool"),
+    ("Is there a correlation between revenue and quantity?", "stats_tool"),
+
+    # ── Outliers / trends (if your stats_tools support them) ──
+    ("Are there any outliers in revenue?",                  "stats_tool"),
+    ("Detect outliers in the data",                         "stats_tool"),
+    ("Show me trends over time",                            "stats_tool"),
+
+    # ── Clear no_match cases (must decline) ──
+    ("What's the weather today?",                           "no_match"),
+    ("Tell me a joke",                                      "no_match"),
+    ("What is the meaning of life?",                        "no_match"),
+    ("Who won the World Cup?",                              "no_match"),
+    ("What's the stock price of Apple?",                    "no_match"),
+    ("Write a Python function to sort a list",              "no_match"),
+    ("How do I cook pasta?",                                "no_match"),
+    ("What is the capital of France?",                      "no_match"),
+    ("Translate hello to Spanish",                          "no_match"),
+    ("Who is the CEO of Google?",                           "no_match"),
 ]
 
 
