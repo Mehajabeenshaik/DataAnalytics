@@ -25,3 +25,10 @@ eval/results*.txt
 # data/catalog/ is generated at runtime (seeded metrics, proposals,
 # version history). Regenerate it — don't commit runtime state.
 data/catalog/
+
+# ── Runtime tenant / quota / observability data ────────────────────
+# Generated at runtime (Phase 2 + Phase 3). Regenerate — don't commit.
+data/tenants/
+data/quotas/
+data/observability/
+data/tenants_data/

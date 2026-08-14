@@ -56,3 +56,22 @@ AUDIT_DB_PATH = os.getenv("AUDIT_DB_PATH", str(BASE_DIR / "audit.db"))
 
 DB_ENCRYPTION_KEY = os.getenv("DB_ENCRYPTION_KEY", "")
 SESSION_TIMEOUT_MINUTES = int(os.getenv("SESSION_TIMEOUT_MINUTES", "30"))
+
+# ── Phase 2: Tenant quotas & resource limits ─────────────────────────────
+# Default per-tenant limits. Overridable per-tenant via tenant_quotas.set_quota().
+DEFAULT_MAX_QUERIES_PER_DAY = int(os.getenv("DEFAULT_MAX_QUERIES_PER_DAY", "500"))
+DEFAULT_MAX_LLM_CALLS_PER_DAY = int(os.getenv("DEFAULT_MAX_LLM_CALLS_PER_DAY", "1000"))
+DEFAULT_MAX_ROWS_PER_QUERY = int(os.getenv("DEFAULT_MAX_ROWS_PER_QUERY", "100000"))
+DEFAULT_MAX_FILE_SIZE_MB = int(os.getenv("DEFAULT_MAX_FILE_SIZE_MB", "50"))
+DEFAULT_MAX_PLAN_STEPS = int(os.getenv("DEFAULT_MAX_PLAN_STEPS", "3"))
+DEFAULT_QUERY_TIMEOUT_SECONDS = int(os.getenv("DEFAULT_QUERY_TIMEOUT_SECONDS", "30"))
+
+# ── Phase 3: Tenant isolation & SSO ──────────────────────────────────────
+TENANT_ISOLATION_ENABLED = os.getenv("TENANT_ISOLATION_ENABLED", "true").lower() == "true"
+DEFAULT_TENANT_ID = os.getenv("DEFAULT_TENANT_ID", "default")  # local demo only
+
+OIDC_ENABLED = os.getenv("OIDC_ENABLED", "false").lower() == "true"
+OIDC_ISSUER = os.getenv("OIDC_ISSUER", "")
+OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "")
+OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
+OIDC_REDIRECT_URI = os.getenv("OIDC_REDIRECT_URI", "")

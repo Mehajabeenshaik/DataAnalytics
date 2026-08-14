@@ -259,12 +259,13 @@ def plan(
     question: str,
     ds: DataSource,
     provider: LLMProvider,
+    tenant_id: str = "default",
 ) -> Plan:
     # Governed catalog: only APPROVED metrics are visible to the LLM planner.
     # Backward-compatible fallback: if the catalog hasn't been seeded yet,
     # use the legacy in-memory auto-generated metrics so existing callers
     # (and tests) that don't seed the catalog keep working unchanged.
-    catalog_service = CatalogService()
+    catalog_service = CatalogService(tenant_id=tenant_id)
     approved = catalog_service.get_approved_metrics()
     metrics = approved if approved else ds.get_metrics()
     catalog = get_metric_catalog_for_llm(metrics)
@@ -620,14 +621,15 @@ def _resolve_question(
     question: str,
     ds: DataSource,
     provider: LLMProvider,
+    tenant_id: str = "default",
 ) -> tuple[Plan | None, dict | None]:
     """Run plan() + schema-fallback matching + propose-metric flow."""
-    cached = get_cached_response(question, dataset_id=ds.dataset_id)
+    cached = get_cached_response(question, dataset_id=ds.dataset_id, tenant_id=tenant_id)
     if cached is not None:
         return None, cached
 
     try:
-        the_plan = plan(question, ds, provider)
+        the_plan = plan(question, ds, provider, tenant_id=tenant_id)
     except Exception:
         the_plan = Plan(can_answer=False, reason="LLM provider offline", plan_type="no_match")
 
@@ -763,7 +765,7 @@ def _resolve_question(
         if proposal.can_propose:
             # Persist the proposal into the governed catalog for human review.
             # It stays "pending" until a human approves it via the CLI or API.
-            catalog_service = CatalogService()
+            catalog_service = CatalogService(tenant_id=tenant_id)
             catalog_proposal = CatalogMetricProposal(
                 metric=CatalogMetricDefinition(
                     name=proposal.proposed_name,
@@ -815,13 +817,19 @@ def _resolve_question(
     return the_plan, None
 
 
-def ask(question: str, ds: DataSource, provider: LLMProvider) -> dict:
+def ask(
+    question: str,
+    ds: DataSource,
+    provider: LLMProvider,
+    tenant_id: str = "default",
+) -> dict:
     """Phase 2 agent loop: plan -> execute -> synthesize.
 
     This is the main entrypoint for the governed agent.
     Checks the response cache first - repeated questions skip the LLM entirely.
+    tenant_id scopes the catalog and cache so no cross-tenant leakage occurs.
     """
-    the_plan, early_response = _resolve_question(question, ds, provider)
+    the_plan, early_response = _resolve_question(question, ds, provider, tenant_id=tenant_id)
     if early_response is not None:
         return early_response
 
@@ -834,8 +842,8 @@ def ask(question: str, ds: DataSource, provider: LLMProvider) -> dict:
         "results": results,
     }
 
-    # Cache the response for future repeated questions (scoped to this dataset)
-    set_cached_response(question, None, response, dataset_id=ds.dataset_id)
+    # Cache the response for future repeated questions (scoped to tenant + dataset)
+    set_cached_response(question, None, response, dataset_id=ds.dataset_id, tenant_id=tenant_id)
 
     return response
 
@@ -844,6 +852,7 @@ def ask_stream(
     question: str,
     ds: DataSource,
     provider: LLMProvider,
+    tenant_id: str = "default",
 ):
     """Streaming Phase 2 agent loop: plan -> execute -> synthesize (streamed).
 
@@ -860,7 +869,7 @@ def ask_stream(
     a no_match/propose_metric early exit yields a single dict with no text
     chunks, matching what ask() would have returned.
     """
-    the_plan, early_response = _resolve_question(question, ds, provider)
+    the_plan, early_response = _resolve_question(question, ds, provider, tenant_id=tenant_id)
     if early_response is not None:
         yield early_response
         return
@@ -880,7 +889,7 @@ def ask_stream(
         "results": results,
     }
 
-    # Cache the response for future repeated questions (same as ask())
-    set_cached_response(question, None, response, dataset_id=ds.dataset_id)
+    # Cache the response for future repeated questions (scoped to tenant + dataset)
+    set_cached_response(question, None, response, dataset_id=ds.dataset_id, tenant_id=tenant_id)
 
     yield response

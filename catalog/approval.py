@@ -28,8 +28,9 @@ class ApprovalService:
     (agent_phase2.propose_metric) — this service only governs the lifecycle.
     """
 
-    def __init__(self, store: CatalogStore | None = None):
+    def __init__(self, store: CatalogStore | None = None, tenant_id: str = "default"):
         self.store = store or CatalogStore()
+        self.tenant_id = tenant_id
 
     def _audit(self, username: str, action_type: str, details: dict) -> None:
         """Best-effort audit write. Never raises — the catalog workflow must
@@ -42,6 +43,7 @@ class ApprovalService:
                 role="analyst",
                 action_type=action_type,
                 details=details,
+                tenant_id=self.tenant_id,
             )
         except Exception:
             # Audit is a side-channel; a failure here must not block approval.

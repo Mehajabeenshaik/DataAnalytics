@@ -376,7 +376,8 @@ async def ask_question(
     try:
         provider = get_provider()
         ds = session["ds"]
-        result = agent_phase2.ask(req.question, ds, provider)
+        # tenant_id = the API key (existing isolation boundary for the widget)
+        result = agent_phase2.ask(req.question, ds, provider, tenant_id=tenant.api_key)
 
         # Serialize any pandas objects in results
         return AskResponse(
@@ -420,7 +421,8 @@ async def ask_question_stream(
             except Exception:
                 provider = FallbackLLMProvider()
             ds = session["ds"]
-            for event in agent_phase2.ask_stream(req.question, ds, provider):
+            # tenant_id = the API key (existing isolation boundary for the widget)
+            for event in agent_phase2.ask_stream(req.question, ds, provider, tenant_id=tenant.api_key):
 
                 if isinstance(event, str):
                     yield _sse({"type": "chunk", "text": event})

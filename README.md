@@ -163,11 +163,106 @@ python eval/run_eval_3x.py     # three runs for stability
 
 ---
 
+## Deployment modes
+
+### 1. Local demo (single tenant)
+- `DEFAULT_TENANT_ID=default` — the only mode where a missing tenant context falls back.
+- `python demo.py` works unchanged.
+
+### 2. Multi-tenant SaaS
+- Set `TENANT_ISOLATION_ENABLED=true` (default).
+- Every request must carry a valid tenant context (JWT with `tenant_id` or `X-API-Key` for the widget).
+- Each tenant gets its own catalog root (`data/catalog/<tenant_id>/`), quota counters, observability log, and audit records.
+
+### 3. VPC / on-prem
+- Same isolation model; runs fully offline with Ollama or a self-hosted vLLM server.
+- No external IdP, Redis, or Postgres required for the core path.
+
+---
+
+## Identity
+
+| Method   | When to use                                    | Notes                                          |
+|----------|------------------------------------------------|------------------------------------------------|
+| API key  | Widget embed (end users don't log in)          | `X-API-Key` header, identifies the company     |
+| JWT      | Interactive dashboard / admin                  | Username + password → short-lived JWT          |
+| OIDC/SSO | B2B pilots with SSO requirements               | `/auth/login/sso`, `/auth/callback`, `/auth/token` integration points (see `auth.py`) |
+
+After SSO login, the IdP user is mapped to our tenant store and the app issues its own short-lived JWT carrying `tenant_id` + roles.
+
+**RBAC roles:** `owner` / `admin` (approve metrics, export audit, manage org/tenants) · `analyst` (ask questions, propose metrics) · `viewer` (read answers only).
+
+---
+
+## Threat model note
+
+Cross-tenant isolation is enforced **by construction**, not by convention:
+- **Separate catalog roots** — `CatalogService(tenant_id=...)` points to `data/catalog/<tenant_id>/`
+- **Auth context** — every `ask()`, catalog, and audit call receives an `AuthContext` with `tenant_id`
+- **Audit scoping** — `export_audit()` always filters by `tenant_id` in the WHERE clause
+- **Cache keys** — tenant_id is hashed into every cache key
+- No fallback to a global catalog when `TENANT_ISOLATION_ENABLED=true` (missing context → 401/403)
+
+---
+
+## Tenant administration
+
+```bash
+# Create an org, tenant, and user
+python -m tenant.cli create-org "Acme Corp"
+python -m tenant.cli create-tenant <org_id> "Acme Analytics"
+python -m tenant.cli create-user admin@acme.com --name "Admin"
+python -m tenant.cli add-user admin@acme.com --role admin --tenant <tenant_id>
+
+# Usage & audit
+python -m tenant.cli usage <tenant_id>
+python -m tenant.cli export-audit <tenant_id> --days 30
+```
+
+Per-tenant catalog path on disk:
+```
+data/catalog/<tenant_id>/
+  current/metrics.yaml
+  proposals/<uuid>.yaml
+  history/v001/...
+```
+
+Admin API (protected by admin/owner role):
+```
+GET  /admin/orgs
+POST /admin/orgs
+GET  /admin/tenants?org_id=...
+POST /admin/tenants
+GET  /admin/tenants/{tenant_id}/usage
+GET  /admin/tenants/{tenant_id}/catalog
+POST /admin/tenants/{tenant_id}/catalog/approve/{proposal_id}
+GET  /admin/tenants/{tenant_id}/audit/export?days=30
+```
+
+---
+
+## Phase 2: Quotas, resource limits, observability
+
+- `tenant_quotas.py` — per-tenant daily query/LLM-call counters, row caps, file size caps. Persisted under `data/quotas/`.
+- `resource_limits.py` — deterministic enforcement of plan-step caps, max result rows, query timeouts.
+- `observability.py` — structured JSONL telemetry per tenant under `data/observability/`.
+- `audit_logger.py` — every audit record now carries `tenant_id`; `export_audit(tenant_id)` returns only that tenant's records.
+
+## Tests
+
+```bash
+python -m pytest test_catalog.py test_tenant_quotas.py test_tenant_isolation.py test_rbac.py test_catalog_tenant_scoped.py -q
+```
+
+---
+
 ## Known limitations
 
 - Best suited for one primary dataset per running instance
 - Live database read-only checks are fully verified on SQLite; use proper read-only roles on Postgres/MySQL
 - Some derived metrics are approximations and should be reviewed
+- File-based tenant store (`data/tenants/`) is local-first; documented migration path to Postgres later
+- SSO endpoints are production-shaped stubs — the IdP HTTP calls are marked integration points in `auth.py`
 
 ---
 

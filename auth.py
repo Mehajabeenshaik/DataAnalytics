@@ -35,6 +35,10 @@ app.add_middleware(
 from api_widget import widget_router  # noqa: E402
 app.include_router(widget_router)
 
+# ── Mount admin API router ────────────────────────────────────────────────
+from admin_api import admin_router  # noqa: E402
+app.include_router(admin_router)
+
 
 def _get_auth_db():
     conn = sqlite3.connect(AUTH_DB_PATH)
@@ -198,6 +202,75 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends()):
 @app.get("/auth/me", response_model=UserOut)
 async def get_me(user: UserOut = Depends(get_current_user)):
     return user
+
+
+# ── SSO / OIDC path (SSO-ready stub) ───────────────────────────────────────
+# Integration points for WorkOS / Auth0 / Descope / Keycloak style OIDC.
+# When OIDC_ENABLED=true, these endpoints become live:
+#   1. GET /auth/login → redirect to the IdP authorization URL
+#   2. GET /auth/callback → exchange the IdP code, look up / create the user,
+#      and issue our own short-lived JWT carrying tenant_id + roles.
+#   3. POST /auth/token → exchange an IdP-issued token for our JWT.
+#
+# The actual IdP HTTP calls are intentionally NOT hardcoded — drop in your
+# provider's SDK (e.g. authlib, python-jose, or the WorkOS/Descope SDKs)
+# at the marked integration points below.
+from fastapi.responses import RedirectResponse
+from config import OIDC_ENABLED, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_REDIRECT_URI
+
+
+@app.get("/auth/login/sso")
+async def sso_login():
+    """Start the SSO flow. With OIDC_ENABLED, redirect to the IdP.
+
+    Integration point: build the authorization URL from OIDC_ISSUER and
+    OIDC_CLIENT_ID, then `return RedirectResponse(auth_url)`.
+    """
+    if not OIDC_ENABLED:
+        raise HTTPException(
+            status_code=501,
+            detail="OIDC is disabled. Set OIDC_ENABLED=true and configure OIDC_ISSUER/CLIENT_ID to enable SSO.",
+        )
+    # TODO(integration): construct the IdP authorization URL:
+    #   auth_url = f"{OIDC_ISSUER}/authorize?client_id={OIDC_CLIENT_ID}&redirect_uri={OIDC_REDIRECT_URI}&response_type=code&scope=openid%20email%20profile"
+    #   return RedirectResponse(auth_url)
+    raise HTTPException(
+        status_code=501,
+        detail="OIDC integration point: build the authorization URL from your IdP's discovery document.",
+    )
+
+
+@app.get("/auth/callback")
+async def sso_callback(code: str | None = None, state: str | None = None):
+    """IdP redirect callback. Exchange the code for tokens, then mint our JWT.
+
+    Integration point: call your IdP's token endpoint with (code, client_id,
+    client_secret, redirect_uri), validate the ID token, look up/create the
+    user in TenantService, resolve their tenant_id + roles, then call
+    create_access_token() with {"sub": ..., "role": ..., "tenant_id": ...}.
+    """
+    if not OIDC_ENABLED:
+        raise HTTPException(status_code=501, detail="OIDC is disabled.")
+    raise HTTPException(
+        status_code=501,
+        detail="OIDC integration point: exchange the IdP code for tokens, then issue a JWT with tenant_id + roles.",
+    )
+
+
+@app.post("/auth/token")
+async def sso_token_exchange(payload: dict):
+    """Exchange an IdP-issued token for our short-lived JWT.
+
+    Integration point: validate the IdP token via the discovery document /
+    JWKS, map the subject to a User + Membership, resolve tenant_id + roles,
+    then return our own create_access_token() payload.
+    """
+    if not OIDC_ENABLED:
+        raise HTTPException(status_code=501, detail="OIDC is disabled.")
+    raise HTTPException(
+        status_code=501,
+        detail="OIDC integration point: validate the IdP token, resolve tenant_id + roles, and issue our JWT.",
+    )
 
 
 @app.post("/auth/register", response_model=UserOut, dependencies=[Depends(require_admin)])

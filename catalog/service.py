@@ -11,6 +11,8 @@ widget) should use. It guarantees:
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from data_source import DataSource
 from metric_factory import generate_metrics
 
@@ -26,11 +28,22 @@ class CatalogService:
     returns the same {name: {synonyms, description, column, agg, groupby,
     base_filters}} shape that DataSource.get_metrics() used to return, so
     existing agent code keeps working unchanged.
+
+    Tenant isolation: each CatalogService is scoped to a single tenant_id.
+    The store root is data/catalog/<tenant_id>/ so approved metrics and
+    proposals NEVER cross tenants.
     """
 
-    def __init__(self, store: CatalogStore | None = None):
-        self.store = store or CatalogStore()
-        self.approval = ApprovalService(self.store)
+    def __init__(
+        self,
+        store: CatalogStore | None = None,
+        tenant_id: str = "default",
+    ):
+        if store is None:
+            store = CatalogStore(root=Path("data/catalog") / tenant_id)
+        self.store = store
+        self.tenant_id = tenant_id
+        self.approval = ApprovalService(self.store, tenant_id=tenant_id)
 
     # ── LLM-visible approved metrics ──────────────────────────────────────
 
