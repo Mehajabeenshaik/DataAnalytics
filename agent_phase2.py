@@ -822,30 +822,112 @@ def ask(
     ds: DataSource,
     provider: LLMProvider,
     tenant_id: str = "default",
+    user: str = "system",
 ) -> dict:
     """Phase 2 agent loop: plan -> execute -> synthesize.
 
     This is the main entrypoint for the governed agent.
     Checks the response cache first - repeated questions skip the LLM entirely.
-    tenant_id scopes the catalog and cache so no cross-tenant leakage occurs.
+    tenant_id scopes the catalog, cache, quotas, observability, and audit so
+    no cross-tenant leakage occurs. All resource limits (plan steps, row caps,
+    timeouts) and quotas are enforced here.
     """
-    the_plan, early_response = _resolve_question(question, ds, provider, tenant_id=tenant_id)
-    if early_response is not None:
-        return early_response
+    import time as _time
+    from observability import log_agent_run
+    from audit_logger import log_action
+    from resource_limits import max_plan_steps, apply_row_limit, run_with_timeout, ResourceLimitError
+    from tenant_quotas import check_and_consume_query_quota, QuotaExceededError
 
-    results = execute_plan(the_plan, ds)
-    answer = synthesize(question, the_plan, results, provider)
+    t0 = _time.perf_counter()
+    plan_type = "unknown"
+    confidence = "n/a"
+    error = None
+    metrics_or_tools: list[str] = []
 
-    response = {
-        **answer,
-        "plan": the_plan.model_dump(),
-        "results": results,
-    }
+    try:
+        # 1. Quota check + consume (only if tenant_id is meaningful)
+        if tenant_id and tenant_id != "default":
+            check_and_consume_query_quota(tenant_id)
 
-    # Cache the response for future repeated questions (scoped to tenant + dataset)
-    set_cached_response(question, None, response, dataset_id=ds.dataset_id, tenant_id=tenant_id)
+        the_plan, early_response = _resolve_question(question, ds, provider, tenant_id=tenant_id)
+        plan_type = the_plan.plan_type if the_plan else "early"
+        if early_response is not None:
+            confidence = early_response.get("confidence", "n/a")
+            plan_type = early_response.get("plan", {}).get("plan_type", plan_type)
+            metrics_or_tools = early_response.get("lineage", {}).get("metrics_or_tools_used", [])
+            return early_response
 
-    return response
+        # 2. Cap plan steps to tenant/global limit
+        the_plan.steps = the_plan.steps[: max_plan_steps()]
+
+        # 3. Execute with timeout + row limits
+        def _execute():
+            results = execute_plan(the_plan, ds)
+            for r in results:
+                if r.get("result") is not None and not r.get("error"):
+                    r["result"] = apply_row_limit(r["result"])
+            return results
+
+        results = run_with_timeout(_execute)
+        metrics_or_tools = [s.target for s in the_plan.steps]
+
+        # 4. Synthesize
+        answer = synthesize(question, the_plan, results, provider)
+        confidence = answer.get("confidence", "n/a")
+
+        response = {
+            **answer,
+            "plan": the_plan.model_dump(),
+            "results": results,
+        }
+
+        # Cache the response for future repeated questions (scoped to tenant + dataset)
+        set_cached_response(question, None, response, dataset_id=ds.dataset_id, tenant_id=tenant_id)
+
+        return response
+
+    except QuotaExceededError as e:
+        error = "quota_exceeded"
+        raise
+
+    except ResourceLimitError as e:
+        error = str(e)
+        return {
+            "answer": "The query hit a resource limit (timeout or row cap). Narrow the question or contact admin.",
+            "confidence": "low",
+            "caveats": [str(e)],
+            "lineage": {"metrics_or_tools_used": metrics_or_tools, "filters_applied": {}, "notes": "resource_limit"},
+            "plan": {"can_answer": False, "reason": str(e), "plan_type": plan_type, "steps": []},
+            "results": [],
+        }
+
+    except Exception as e:
+        error = type(e).__name__
+        raise
+
+    finally:
+        latency_ms = int((_time.perf_counter() - t0) * 1000)
+        log_agent_run(
+            tenant_id=tenant_id or "default",
+            plan_type=plan_type,
+            metrics_or_tools=metrics_or_tools,
+            latency_ms=latency_ms,
+            confidence=confidence,
+            error=error,
+        )
+        log_action(
+            username=user,
+            role="agent",
+            action_type="QUERY",
+            details={
+                "plan_type": plan_type,
+                "metrics_or_tools": metrics_or_tools,
+                "confidence": confidence,
+                "error": error,
+                "question_preview": question[:80],
+            },
+            tenant_id=tenant_id,
+        )
 
 
 def ask_stream(
@@ -853,6 +935,7 @@ def ask_stream(
     ds: DataSource,
     provider: LLMProvider,
     tenant_id: str = "default",
+    user: str = "system",
 ):
     """Streaming Phase 2 agent loop: plan -> execute -> synthesize (streamed).
 
@@ -868,28 +951,110 @@ def ask_stream(
     Only the synthesize step's delivery is streamed. A response-cache hit or
     a no_match/propose_metric early exit yields a single dict with no text
     chunks, matching what ask() would have returned.
+
+    Resource limits (plan steps, row caps, timeouts) and quotas are enforced
+    exactly as in ask().
     """
-    the_plan, early_response = _resolve_question(question, ds, provider, tenant_id=tenant_id)
-    if early_response is not None:
-        yield early_response
-        return
+    import time as _time
+    from observability import log_agent_run
+    from audit_logger import log_action
+    from resource_limits import max_plan_steps, apply_row_limit, run_with_timeout, ResourceLimitError
+    from tenant_quotas import check_and_consume_query_quota, QuotaExceededError
 
-    results = execute_plan(the_plan, ds)
+    t0 = _time.perf_counter()
+    plan_type = "unknown"
+    confidence = "n/a"
+    error = None
+    metrics_or_tools: list[str] = []
 
-    final_answer: dict | None = None
-    for event in synthesize_stream(question, the_plan, results, provider):
-        if isinstance(event, str):
-            yield event
-        else:
-            final_answer = event
+    try:
+        # 1. Quota check + consume (only if tenant_id is meaningful)
+        if tenant_id and tenant_id != "default":
+            check_and_consume_query_quota(tenant_id)
 
-    response = {
-        **(final_answer or {}),
-        "plan": the_plan.model_dump(),
-        "results": results,
-    }
+        the_plan, early_response = _resolve_question(question, ds, provider, tenant_id=tenant_id)
+        plan_type = the_plan.plan_type if the_plan else "early"
+        if early_response is not None:
+            confidence = early_response.get("confidence", "n/a")
+            plan_type = early_response.get("plan", {}).get("plan_type", plan_type)
+            metrics_or_tools = early_response.get("lineage", {}).get("metrics_or_tools_used", [])
+            yield early_response
+            return
 
-    # Cache the response for future repeated questions (scoped to tenant + dataset)
-    set_cached_response(question, None, response, dataset_id=ds.dataset_id, tenant_id=tenant_id)
+        # 2. Cap plan steps to tenant/global limit
+        the_plan.steps = the_plan.steps[: max_plan_steps()]
 
-    yield response
+        # 3. Execute with timeout + row limits
+        def _execute():
+            results = execute_plan(the_plan, ds)
+            for r in results:
+                if r.get("result") is not None and not r.get("error"):
+                    r["result"] = apply_row_limit(r["result"])
+            return results
+
+        results = run_with_timeout(_execute)
+        metrics_or_tools = [s.target for s in the_plan.steps]
+
+        # 4. Synthesize (streamed)
+        final_answer: dict | None = None
+        for event in synthesize_stream(question, the_plan, results, provider):
+            if isinstance(event, str):
+                yield event
+            else:
+                final_answer = event
+
+        confidence = (final_answer or {}).get("confidence", "n/a")
+
+        response = {
+            **(final_answer or {}),
+            "plan": the_plan.model_dump(),
+            "results": results,
+        }
+
+        # Cache the response for future repeated questions (scoped to tenant + dataset)
+        set_cached_response(question, None, response, dataset_id=ds.dataset_id, tenant_id=tenant_id)
+
+        yield response
+
+    except QuotaExceededError as e:
+        error = "quota_exceeded"
+        raise
+
+    except ResourceLimitError as e:
+        error = str(e)
+        yield {
+            "answer": "The query hit a resource limit (timeout or row cap). Narrow the question or contact admin.",
+            "confidence": "low",
+            "caveats": [str(e)],
+            "lineage": {"metrics_or_tools_used": metrics_or_tools, "filters_applied": {}, "notes": "resource_limit"},
+            "plan": {"can_answer": False, "reason": str(e), "plan_type": plan_type, "steps": []},
+            "results": [],
+        }
+
+    except Exception as e:
+        error = type(e).__name__
+        raise
+
+    finally:
+        latency_ms = int((_time.perf_counter() - t0) * 1000)
+        log_agent_run(
+            tenant_id=tenant_id or "default",
+            plan_type=plan_type,
+            metrics_or_tools=metrics_or_tools,
+            latency_ms=latency_ms,
+            confidence=confidence,
+            error=error,
+        )
+        log_action(
+            username=user,
+            role="agent",
+            action_type="QUERY",
+            details={
+                "plan_type": plan_type,
+                "metrics_or_tools": metrics_or_tools,
+                "confidence": confidence,
+                "error": error,
+                "question_preview": question[:80],
+            },
+            tenant_id=tenant_id,
+        )

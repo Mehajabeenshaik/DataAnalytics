@@ -118,8 +118,26 @@ async def approve_proposal(
 async def tenant_audit_export(
     tenant_id: str,
     days: int = 30,
+    format: str = "json",  # json|csv
     user: UserOut = Depends(require_admin),
 ):
     _resolve_tenant_access(tenant_id, user)
     logs = export_audit(tenant_id, days=days)
+    if format == "csv":
+        import io
+        import csv as _csv
+
+        buf = io.StringIO()
+        fieldnames = ["id", "timestamp", "username", "role", "action_type", "details", "ip_address", "tenant_id"]
+        writer = _csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+        writer.writeheader()
+        for row in logs:
+            writer.writerow(row)
+        from fastapi.responses import PlainTextResponse
+
+        return PlainTextResponse(
+            buf.getvalue(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="audit_{tenant_id}.csv"'},
+        )
     return {"tenant_id": tenant_id, "days": days, "records": logs}

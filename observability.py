@@ -88,3 +88,47 @@ def get_usage_summary(tenant_id: str, days: int = 30) -> dict:
         "total_events": len(recent),
         "by_type": by_type,
     }
+
+
+# ── Agent-run telemetry (Phase 2.5) ───────────────────────────────────────
+
+def log_agent_run(
+    tenant_id: str,
+    plan_type: str,
+    metrics_or_tools: list[str] | None = None,
+    latency_ms: int = 0,
+    confidence: str = "n/a",
+    error: str | None = None,
+) -> None:
+    """Record a single agent ask() run as a structured telemetry event.
+
+    No PII is ever written here — only plan_type, metric/tool names,
+    latency, confidence, and error type.
+    """
+    record_event(
+        tenant_id,
+        "agent_run",
+        {
+            "plan_type": plan_type,
+            "metrics_or_tools": metrics_or_tools or [],
+            "latency_ms": latency_ms,
+            "confidence": confidence,
+            "error": error,
+        },
+    )
+
+
+def counters(tenant_id: str) -> dict:
+    """Return lightweight in-memory counters for a tenant (for tests/UI).
+
+    Reads the JSONL log and counts agent_run events by outcome.
+    """
+    events = get_events(tenant_id, event_type="agent_run", limit=10_000)
+    total = len(events)
+    errors = sum(1 for e in events if e.get("details", {}).get("error"))
+    return {
+        "tenant_id": tenant_id,
+        "total_runs": total,
+        "errors": errors,
+        "successes": total - errors,
+    }

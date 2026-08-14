@@ -163,6 +163,17 @@ def check_query_quota(tenant_id: str) -> None:
         )
 
 
+def check_and_consume_query_quota(tenant_id: str) -> None:
+    """Check the daily query quota and consume one query slot.
+
+    Raises QuotaExceededError if the tenant is over its daily query limit.
+    Otherwise increments the query counter (and records rows_scanned=0).
+    This is the single public entrypoint the agent calls before running.
+    """
+    check_query_quota(tenant_id)
+    record_query(tenant_id)
+
+
 def check_llm_quota(tenant_id: str) -> None:
     """Raise QuotaExceededError if the tenant is over its daily LLM-call limit."""
     quota = get_quota(tenant_id)

@@ -248,10 +248,48 @@ GET  /admin/tenants/{tenant_id}/audit/export?days=30
 - `observability.py` — structured JSONL telemetry per tenant under `data/observability/`.
 - `audit_logger.py` — every audit record now carries `tenant_id`; `export_audit(tenant_id)` returns only that tenant's records.
 
+### How quotas/limits are enforced (call chain)
+
+```
+ask(question, ds, provider, tenant_id)
+  → check_and_consume_query_quota(tenant_id)     # raises QuotaExceededError → HTTP 429
+  → the_plan.steps[: max_plan_steps()]           # plan-step cap
+  → run_with_timeout(_execute)                   # query timeout
+  → apply_row_limit(result)                      # row cap on every result
+  → synthesize(...)
+  → log_agent_run(...)                           # observability (no PII)
+  → log_action(..., tenant_id)                   # tenant-scoped audit
+```
+
+### Audit export
+
+```bash
+# CLI
+python -m tenant.cli export-audit <tenant_id> --days 30
+
+# API (admin JWT required) — JSON or CSV
+curl -H "Authorization: Bearer <admin_jwt>" \
+  "http://localhost:8000/admin/tenants/<tenant_id>/audit/export?days=30&format=csv"
+```
+
+### Example observability log line
+
+```json
+{"timestamp": "2026-08-14T10:00:00Z", "tenant_id": "tenant_a", "event_type": "agent_run",
+ "details": {"plan_type": "single_metric", "metrics_or_tools": ["total_revenue"],
+             "latency_ms": 1234, "confidence": "high", "error": null}}
+```
+
+## Security & pilot docs
+
+- [docs/SECURITY.md](docs/SECURITY.md) — safety model, data flow, tenant isolation, PII, deployment modes
+- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — assets, threats, controls, residual risks
+- [docs/PILOT.md](docs/PILOT.md) — 2-week design-partner pilot guide
+
 ## Tests
 
 ```bash
-python -m pytest test_catalog.py test_tenant_quotas.py test_tenant_isolation.py test_rbac.py test_catalog_tenant_scoped.py -q
+python -m pytest test_catalog.py test_tenant_quotas.py test_resource_limits.py test_tenant_isolation.py test_rbac.py test_catalog_tenant_scoped.py -q
 ```
 
 ---

@@ -25,6 +25,8 @@ from tenant import validate_api_key, Tenant
 from session_manager import SessionManager
 from data_source import DataSource
 from llm_provider import get_provider
+from tenant_quotas import QuotaExceededError
+from resource_limits import ResourceLimitError
 import agent_phase2
 import stats_tools
 
@@ -390,6 +392,20 @@ async def ask_question(
         raise HTTPException(
             status_code=503,
             detail=f"LLM service unavailable: {str(e)}",
+        )
+    except QuotaExceededError as e:
+        # Quota exceeded → HTTP 429 with a clear JSON body
+        raise HTTPException(
+            status_code=429,
+            detail=f"Quota exceeded: {str(e)}",
+        )
+    except ResourceLimitError as e:
+        # Resource limit (timeout/row cap) → clean low-confidence response
+        return AskResponse(
+            answer="The query hit a resource limit (timeout or row cap). Narrow the question or contact admin.",
+            confidence="low",
+            caveats=[str(e)],
+            lineage={"metrics_or_tools_used": [], "filters_applied": {}, "notes": "resource_limit"},
         )
     except Exception as e:
         traceback.print_exc()
