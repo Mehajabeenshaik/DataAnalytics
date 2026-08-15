@@ -260,6 +260,7 @@ def plan(
     ds: DataSource,
     provider: LLMProvider,
     tenant_id: str = "default",
+    dataset_names: list[str] | None = None,
 ) -> Plan:
     # Governed catalog: only APPROVED metrics are visible to the LLM planner.
     # Backward-compatible fallback: if the catalog hasn't been seeded yet,
@@ -282,11 +283,22 @@ def plan(
         for t in ALLOWED_STATS_TOOLS
     ]
 
+    # Multi-dataset support: include the list of available dataset names in
+    # the planner prompt only when more than one dataset is loaded. With a
+    # single dataset (or None), behavior is identical to before.
+    dataset_block = ""
+    if dataset_names and len(dataset_names) > 1:
+        dataset_block = (
+            f"Available datasets: {dataset_names}\n"
+            f"Current dataset: '{ds.name}'\n\n"
+        )
+
     prompt = (
         f"Schema:\n{schema_card}\n\n"
         f"Allowed filter columns: {allowed_filters}\n\n"
         f"Available metrics:\n{json.dumps(catalog, indent=2)}\n\n"
         f"Available statistical tools:\n{json.dumps(tools_catalog, indent=2)}\n\n"
+        f"{dataset_block}"
         f"Question: {question}"
     )
 
@@ -635,6 +647,7 @@ def _resolve_question(
     ds: DataSource,
     provider: LLMProvider,
     tenant_id: str = "default",
+    dataset_names: list[str] | None = None,
 ) -> tuple[Plan | None, dict | None]:
     """Run plan() + schema-fallback matching + propose-metric flow."""
     cached = get_cached_response(question, dataset_id=ds.dataset_id, tenant_id=tenant_id)
@@ -642,7 +655,7 @@ def _resolve_question(
         return None, cached
 
     try:
-        the_plan = plan(question, ds, provider, tenant_id=tenant_id)
+        the_plan = plan(question, ds, provider, tenant_id=tenant_id, dataset_names=dataset_names)
     except Exception:
         the_plan = Plan(can_answer=False, reason="LLM provider offline", plan_type="no_match")
 
@@ -836,6 +849,7 @@ def ask(
     provider: LLMProvider,
     tenant_id: str = "default",
     user: str = "system",
+    dataset_names: list[str] | None = None,
 ) -> dict:
     """Phase 2 agent loop: plan -> execute -> synthesize.
 
@@ -862,7 +876,9 @@ def ask(
         if tenant_id and tenant_id != "default":
             check_and_consume_query_quota(tenant_id)
 
-        the_plan, early_response = _resolve_question(question, ds, provider, tenant_id=tenant_id)
+        the_plan, early_response = _resolve_question(
+            question, ds, provider, tenant_id=tenant_id, dataset_names=dataset_names
+        )
         plan_type = the_plan.plan_type if the_plan else "early"
         if early_response is not None:
             confidence = early_response.get("confidence", "n/a")
@@ -949,6 +965,7 @@ def ask_stream(
     provider: LLMProvider,
     tenant_id: str = "default",
     user: str = "system",
+    dataset_names: list[str] | None = None,
 ):
     """Streaming Phase 2 agent loop: plan -> execute -> synthesize (streamed).
 
@@ -985,7 +1002,9 @@ def ask_stream(
         if tenant_id and tenant_id != "default":
             check_and_consume_query_quota(tenant_id)
 
-        the_plan, early_response = _resolve_question(question, ds, provider, tenant_id=tenant_id)
+        the_plan, early_response = _resolve_question(
+            question, ds, provider, tenant_id=tenant_id, dataset_names=dataset_names
+        )
         plan_type = the_plan.plan_type if the_plan else "early"
         if early_response is not None:
             confidence = early_response.get("confidence", "n/a")

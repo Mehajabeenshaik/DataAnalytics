@@ -324,7 +324,7 @@ python -m pytest test_catalog.py test_tenant_quotas.py test_resource_limits.py t
 
 ## Known limitations
 
-- Best suited for one primary dataset per running instance
+- Multiple named datasets per session are supported (see `dataset_registry.py`); when only one dataset is loaded, behavior is identical to the original single-dataset flow
 - Live database connections are production-ready for SQLite, PostgreSQL, and MySQL/MariaDB. Each backend enforces read-only access via a session-level `READ ONLY` directive followed by a DDL probe — writable credentials are rejected with clear, actionable error messages. Connection and statement timeouts prevent hangs on unreachable hosts. Pass a connection string for a dedicated read-only role (see `connect_live()` docstring for per-dialect `GRANT` examples).
 - Some derived metrics are approximations and should be reviewed
 - Tenant store supports both a file-based backend (`data/tenants/`, default) and a PostgreSQL backend (`TENANT_STORE=postgres` + `TENANT_DATABASE_URL`). Tables are bootstrapped automatically on first connection.

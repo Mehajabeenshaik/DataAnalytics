@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from tenant import validate_api_key, WidgetTenant as Tenant
 from session_manager import SessionManager
 from data_source import DataSource
+from dataset_registry import DatasetRegistry
 from llm_provider import get_provider
 from tenant_quotas import QuotaExceededError
 from resource_limits import ResourceLimitError
@@ -35,7 +36,7 @@ widget_router = APIRouter(tags=["widget"])
 # ── Shared state ──────────────────────────────────────────────────────────
 _session_mgr = SessionManager()
 
-# Maps session_id -> {"ds": DataSource, "tenant_key": str, "filename": str}
+# Maps session_id -> {"registry": DatasetRegistry, "tenant_key": str, "filename": str}
 _widget_sessions: dict[str, dict] = {}
 
 # Path to the widget JS file
@@ -71,6 +72,7 @@ class UploadResponse(BaseModel):
 class AskRequest(BaseModel):
     session_id: str
     question: str
+    dataset: str | None = None
 
 
 class AskResponse(BaseModel):
@@ -86,6 +88,8 @@ class SessionInfoResponse(BaseModel):
     rows: int
     columns: int
     schema_card: str
+    datasets: list[str] = []
+    default_dataset: str | None = None
 
 
 class TenantSettingsResponse(BaseModel):
@@ -130,7 +134,7 @@ async def create_session(tenant: Tenant = Depends(require_tenant)):
     session_id = str(uuid.uuid4())
     _session_mgr.create_session(session_id)
     _widget_sessions[session_id] = {
-        "ds": None,
+        "registry": DatasetRegistry(),
         "tenant_key": tenant.api_key,
         "filename": None,
     }
@@ -314,15 +318,26 @@ async def upload_file(
         with open(file_path, "wb") as f:
             f.write(content)
 
-        # Load into DataSource
+        # Load into DataSource and add to the session's dataset registry.
+        # The first upload becomes the default dataset; subsequent uploads
+        # are added as named datasets without replacing existing ones.
         ds = DataSource(name=file.filename)
         ds.load_file(str(file_path))
 
-        _widget_sessions[session_id] = {
-            "ds": ds,
-            "tenant_key": tenant.api_key,
-            "filename": file.filename,
-        }
+        session = _widget_sessions.get(session_id)
+        if session is None:
+            session = {
+                "registry": DatasetRegistry(),
+                "tenant_key": tenant.api_key,
+                "filename": None,
+            }
+            _widget_sessions[session_id] = session
+
+        registry: DatasetRegistry = session["registry"]
+        dataset_name = Path(file.filename).stem.lower() or f"dataset_{len(registry) + 1}"
+        registry.add(name=dataset_name, ds=ds, make_default=(len(registry) == 0))
+        session["tenant_key"] = tenant.api_key
+        session["filename"] = file.filename
         _session_mgr.touch(session_id)
 
         # Run baseline analysis (deterministic, no LLM)
@@ -360,7 +375,7 @@ def _resolve_widget_session(req: AskRequest, tenant: Tenant) -> dict:
     if session["tenant_key"] != tenant.api_key:
         raise HTTPException(status_code=403, detail="Session does not belong to this API key")
 
-    if session["ds"] is None:
+    if len(session["registry"]) == 0:
         raise HTTPException(status_code=400, detail="No data uploaded in this session yet")
 
     _session_mgr.touch(req.session_id)
@@ -377,9 +392,16 @@ async def ask_question(
 
     try:
         provider = get_provider()
-        ds = session["ds"]
+        registry: DatasetRegistry = session["registry"]
+        ds = registry.get(req.dataset)
         # tenant_id = the API key (existing isolation boundary for the widget)
-        result = agent_phase2.ask(req.question, ds, provider, tenant_id=tenant.api_key)
+        result = agent_phase2.ask(
+            req.question,
+            ds,
+            provider,
+            tenant_id=tenant.api_key,
+            dataset_names=registry.list_names(),
+        )
 
         # Serialize any pandas objects in results
         return AskResponse(
@@ -436,9 +458,16 @@ async def ask_question_stream(
                 provider = get_provider()
             except Exception:
                 provider = FallbackLLMProvider()
-            ds = session["ds"]
+            registry: DatasetRegistry = session["registry"]
+            ds = registry.get(req.dataset)
             # tenant_id = the API key (existing isolation boundary for the widget)
-            for event in agent_phase2.ask_stream(req.question, ds, provider, tenant_id=tenant.api_key):
+            for event in agent_phase2.ask_stream(
+                req.question,
+                ds,
+                provider,
+                tenant_id=tenant.api_key,
+                dataset_names=registry.list_names(),
+            ):
 
                 if isinstance(event, str):
                     yield _sse({"type": "chunk", "text": event})
@@ -490,14 +519,17 @@ async def get_session_info(
     if session["tenant_key"] != tenant.api_key:
         raise HTTPException(status_code=403, detail="Session does not belong to this API key")
 
-    ds = session["ds"]
-    if ds is None:
+    registry: DatasetRegistry = session["registry"]
+    if len(registry) == 0:
         raise HTTPException(status_code=400, detail="No data uploaded in this session yet")
 
+    ds = registry.get()
     return SessionInfoResponse(
         session_id=session_id,
         filename=session["filename"] or "",
         rows=ds.profile.n_rows if ds.profile else 0,
         columns=ds.profile.n_cols if ds.profile else 0,
         schema_card=ds.get_schema_card(),
+        datasets=registry.list_names(),
+        default_dataset=registry.default_name,
     )

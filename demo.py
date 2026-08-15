@@ -4,9 +4,14 @@ Lets you type natural-language questions and see the planner → execute →
 synthesize response in real time. Works with Ollama, Gemini, or NVIDIA NIM
 (depending on LLM_PROVIDER / .env config).
 
-Usage:
+Supports loading multiple named datasets and switching between them with
+the `use <name>` command. Example:
+
     python demo.py
-    LLM_PROVIDER=nvidia python demo.py
+    > load 2                    # load a CSV file
+    > load 1                    # load the sample DataFrame
+    > use sample_dataframe      # switch to the sample dataset
+    > What is total revenue?
 """
 import os
 import sys
@@ -15,6 +20,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from data_source import DataSource
+from dataset_registry import DatasetRegistry
 from agent_phase2 import ask
 from llm_provider import get_provider
 from config import LLM_PROVIDER
@@ -22,21 +28,8 @@ from catalog.service import CatalogService
 from metric_factory import merge_auto_metrics_into_catalog
 
 
-def run_demo():
-    provider = get_provider()
-    print(f"{'='*60}")
-    print(f"  DataAnalytics — Governed Agent CLI Demo")
-    print(f"  Provider: {provider.provider_name()}")
-    print(f"{'='*60}")
-    print()
-    print("First, load some data.")
-    print("  1. Load sample DataFrame")
-    print("  2. Load CSV file (enter path)")
-    print("  3. Load SQLite DB (enter path)")
-    print()
-
-    choice = input("Choice [1]: ").strip() or "1"
-
+def _load_dataset(choice: str) -> tuple[DataSource, str]:
+    """Load a dataset based on the user's choice. Returns (ds, display_name)."""
     ds = DataSource()
 
     if choice == "1":
@@ -54,29 +47,69 @@ def run_demo():
         })
         ds.load_dataframe(df)
         print(f"Loaded sample data: {ds.profile.n_rows} rows x {ds.profile.n_cols} cols")
-    elif choice == "2":
+        return ds, "sample_dataframe"
+    if choice == "2":
         path = input("CSV path: ").strip()
         ds.load_file(path)
         print(f"Loaded: {ds.profile.n_rows} rows x {ds.profile.n_cols} cols")
-    elif choice == "3":
+        # Use the file stem (lowercase) as the dataset name for `use`.
+        return ds, os.path.splitext(os.path.basename(path))[0].lower()
+    if choice == "3":
         path = input("SQLite DB path: ").strip()
         table = input("Table name [orders_enriched]: ").strip() or "orders_enriched"
         ds.load_sqlite(path, table)
         print(f"Loaded: {ds.profile.n_rows} rows x {ds.profile.n_cols} cols")
+        return ds, table.lower()
 
-    # Seed the governed catalog on first load (auto metrics become approved).
-    catalog = CatalogService()
-    seeded = merge_auto_metrics_into_catalog(ds, catalog)
-    if seeded:
-        print(f"Seeded {seeded} auto metrics into the governed catalog.")
-    else:
-        print("Catalog already populated — using existing approved metrics.")
+    raise ValueError(f"Unknown choice: {choice}")
+
+
+def run_demo():
+    provider = get_provider()
+    registry = DatasetRegistry()
+
+    print(f"{'='*60}")
+    print(f"  DataAnalytics — Governed Agent CLI Demo")
+    print(f"  Provider: {provider.provider_name()}")
+    print(f"{'='*60}")
+    print()
+    print("Load data (you can load more than one file and switch with `use <name>`).")
+    print("  1. Load sample DataFrame")
+    print("  2. Load CSV file (enter path)")
+    print("  3. Load SQLite DB (enter path)")
+    print("  (or blank to skip and just ask questions)")
+    print()
+
+    choice = input("Choice [1]: ").strip() or "1"
+
+    if choice:
+        try:
+            ds, name = _load_dataset(choice)
+            registry.add(name=name, ds=ds, make_default=True)
+
+            # Seed the governed catalog on first load (auto metrics become approved).
+            catalog = CatalogService()
+            seeded = merge_auto_metrics_into_catalog(ds, catalog)
+            if seeded:
+                print(f"Seeded {seeded} auto metrics into the governed catalog.")
+            else:
+                print("Catalog already populated — using existing approved metrics.")
+
+            print()
+            print(f"Schema: {ds.get_schema_card()[:200]}...")
+            print(f"Approved metrics: {len(catalog.get_approved_metrics())} available")
+            print(f"Dataset '{name}' is now the default.")
+        except Exception as e:
+            print(f"Failed to load initial data: {e}")
 
     print()
-    print(f"Schema: {ds.get_schema_card()[:200]}...")
-    print(f"Approved metrics: {len(catalog.get_approved_metrics())} available")
+    print("Commands:")
+    print("  load 1 | 2 | 3   — load another dataset (sample / CSV / SQLite)")
+    print("  use <name>       — switch the active dataset")
+    print("  datasets         — list all loaded datasets")
+    print("  quit             — exit")
     print()
-    print("Type a question in plain English (or 'quit' to exit).")
+    print("Type a question in plain English to ask the agent.")
     print()
     print("Examples:")
     print("  - What is the total revenue?")
@@ -87,21 +120,76 @@ def run_demo():
 
     while True:
         try:
-            question = input("> ").strip()
+            line = input("> ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nGoodbye!")
             break
 
-        if question.lower() in ("quit", "exit", "q"):
+        if not line:
+            continue
+
+        low = line.lower()
+
+        if low in ("quit", "exit", "q"):
             print("Goodbye!")
             break
 
-        if not question:
+        # ── Multi-dataset commands ──────────────────────────────────────
+        if low.startswith("load "):
+            try:
+                ds, name = _load_dataset(low[5:].strip())
+            except Exception as e:
+                print(f"  Error: {e}")
+                continue
+
+            # Seed catalog for the newly loaded dataset so its metrics exist.
+            try:
+                catalog = CatalogService()
+                seeded = merge_auto_metrics_into_catalog(ds, catalog)
+                if seeded:
+                    print(f"  Seeded {seeded} auto metrics for '{name}'.")
+            except Exception as e:
+                print(f"  Catalog seed warning: {e}")
+
+            was_empty = len(registry) == 0
+            registry.add(name=name, ds=ds, make_default=was_empty)
+            print(f"  Added dataset '{name}' ({ds.profile.n_rows} rows x {ds.profile.n_cols} cols).")
+            if was_empty:
+                print(f"  '{name}' is now the default dataset.")
+            else:
+                print(f"  Switch to it with: use {name}")
             continue
 
+        if low.startswith("use "):
+            target = low[4:].strip()
+            if not registry.has(target):
+                print(f"  Unknown dataset '{target}'. Available: {registry.list_names()}")
+                continue
+            # re-add as default without changing the DataSource object
+            ds = registry.get(target)
+            registry.add(name=target, ds=ds, make_default=True)
+            print(f"  Switched to dataset '{target}'.")
+            continue
+
+        if low in ("datasets", "list", "ls"):
+            print(f"  Datasets: {registry.list_names()}")
+            print(f"  Default:  {registry.default_name}")
+            continue
+
+        # ── Ask the agent ───────────────────────────────────────────────
+        if len(registry) == 0:
+            print("  No data loaded. Use `load 1`, `load 2`, or `load 3` first.")
+            continue
+
+        ds = registry.get()
         print()
         try:
-            result = ask(question, ds, provider)
+            result = ask(
+                question=line,
+                ds=ds,
+                provider=provider,
+                dataset_names=registry.list_names(),
+            )
 
             plan_type = result.get("plan", {}).get("plan_type", "?")
             print(f"  Plan: {plan_type}")
