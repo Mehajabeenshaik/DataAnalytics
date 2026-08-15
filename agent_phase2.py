@@ -541,7 +541,7 @@ def _parse_synthesize_response(
     except json.JSONDecodeError:
         data = {
             "answer": _format_fallback_answer(serializable_results),
-            "confidence": "high",
+            "confidence": "low",
             "caveats": [],
             "lineage": {
                 "metrics_or_tools_used": [r["target"] for r in results],
