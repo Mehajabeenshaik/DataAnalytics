@@ -1,0 +1,11 @@
+employee_id,full_name,email,phone,address,department,position,salary
+EMP-101,Alice Johnson,alice.johnson@example.com,+1-555-0101,123 Main St,Engineering,Senior Engineer,125000
+EMP-102,Bob Smith,bob.smith@example.com,+1-555-0102,456 Oak Ave,Engineering,Manager,145000
+EMP-103,Carol Davis,carol.davis@example.com,+1-555-0103,789 Pine Rd,Sales,Lead,95000
+EMP-104,David Wilson,david.wilson@example.com,+1-555-0104,321 Elm St,Sales,Analyst,68000
+EMP-105,Eve Brown,eve.brown@example.com,+1-555-0105,654 Maple Dr,Marketing,Specialist,72000
+EMP-106,Frank Miller,frank.miller@example.com,+1-555-0106,987 Cedar Ln,Marketing,Manager,115000
+EMP-107,Grace Taylor,grace.taylor@example.com,+1-555-0107,147 Birch Way,Human Resources,Analyst,62000
+EMP-108,Henry Anderson,henry.anderson@example.com,+1-555-0108,258 Spruce Ct,Finance,Manager,138000
+EMP-109,Ivy Thomas,ivy.thomas@example.com,+1-555-0109,369 Willow Blvd,Finance,Analyst,75000
+EMP-110,Jack White,jack.white@example.com,+1-555-0110,741 Ash Ave,Engineering,Analyst,82000

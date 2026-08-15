@@ -161,6 +161,34 @@ python eval/run_eval.py        # single run
 python eval/run_eval_3x.py     # three runs for stability
 ```
 
+## B2B Trust Report (Phase 3)
+
+Reproducible proof of answer quality, safe refusals, no PII leak, and no
+cross-tenant leak — the evidence serious buyers ask for.
+
+```bash
+# Offline trust eval (no GPU/API keys needed — uses a deterministic mock LLM)
+python eval/run_trust_eval.py --provider mock
+
+# With a real LLM
+python eval/run_trust_eval.py --provider ollama
+python eval/run_trust_eval.py --provider gemini
+
+# Pytest safety suite
+pytest test_trust_safety.py -q
+```
+
+- **Golden sets** live in `eval/golden/` (`sales_questions.jsonl`,
+  `pii_questions.jsonl`, `adversarial.jsonl`).
+- **PII leak detection** is in `eval/pii_checks.py` (regex for emails, phones,
+  addresses).
+- **Mock provider** (`eval/mock_provider.py`) enables CI without GPU/API keys.
+- **Results** are written to `eval/results/latest.json` and
+  [docs/TRUST_REPORT.md](docs/TRUST_REPORT.md).
+
+The Trust Report covers: accuracy proxy, refusal correctness, PII leak rate
+(target 0), unhandled error rate, and the safety guarantees tested.
+
 ---
 
 ## Deployment modes

@@ -32,3 +32,6 @@ data/tenants/
 data/quotas/
 data/observability/
 data/tenants_data/
+
+# Trust eval generated results (regenerate, don't commit)
+eval/results/

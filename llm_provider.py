@@ -646,6 +646,9 @@ def get_provider(provider: str | None = None) -> LLMProvider:
             return NvidiaProvider()
         elif provider == "vllm":
             return VLLMProvider()
+        elif provider == "mock":
+            from eval.mock_provider import MockTrustProvider
+            return MockTrustProvider()
         else:
             return FallbackLLMProvider()
     except Exception:
