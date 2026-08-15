@@ -8,14 +8,14 @@ from unittest.mock import patch, MagicMock
 from fastapi.testclient import TestClient
 
 from auth import app
-from tenant import init_tenant_db, create_api_key, validate_api_key, revoke_api_key
+from tenant import init_tenant_db, create_api_key, validate_api_key, revoke_api_key, WidgetTenant
 
 
 @pytest.fixture(autouse=True)
 def _setup_tenant_db(tmp_path, monkeypatch):
     """Point AUTH_DB_PATH to a temp file for test isolation."""
     db_path = str(tmp_path / "test_auth.db")
-    monkeypatch.setattr("tenant.AUTH_DB_PATH", db_path)
+    monkeypatch.setattr("tenant.widget_keys.AUTH_DB_PATH", db_path)
     monkeypatch.setattr("auth.AUTH_DB_PATH", db_path)
     # Also ensure auth tables exist
     import sqlite3

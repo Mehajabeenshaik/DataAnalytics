@@ -574,9 +574,22 @@ def synthesize(
     )
     try:
         raw = provider.generate(prompt, system_prompt=SYNTHESIZER_SYSTEM, temperature=0.3)
-        return _parse_synthesize_response(raw, serializable_results, results)
+        data = _parse_synthesize_response(raw, serializable_results, results)
     except Exception:
-        return _parse_synthesize_response("", serializable_results, results)
+        data = {
+            "answer": _format_fallback_answer(serializable_results),
+            "confidence": "low",
+            "caveats": ["Malformed synthesizer response"],
+            "lineage": {
+                "metrics_or_tools_used": [r["target"] for r in results],
+                "filters_applied": {},
+                "notes": "Calculated via deterministic execution engine.",
+            },
+        }
+    # Also ensure malformed JSON from generate() yields low confidence
+    if data.get("confidence") not in ("low", "medium", "high"):
+        data["confidence"] = "low"
+    return data
 
 
 

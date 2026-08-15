@@ -8,14 +8,18 @@ operations are tenant-scoped by construction.
 from __future__ import annotations
 
 from .models import Org, Tenant, User, Membership, AuthContext
-from .store import TenantStore
+from .store import TenantStore, get_store
 
 
 class TenantService:
-    """Facade over TenantStore for identity + isolation operations."""
+    """Facade over a TenantStore for identity + isolation operations.
+
+    By default, the store backend is chosen from config via ``get_store()``.
+    Pass an explicit ``store`` instance to override (e.g. in tests).
+    """
 
     def __init__(self, store: TenantStore | None = None):
-        self.store = store or TenantStore()
+        self.store = store if store is not None else get_store()
 
     # ── Orgs ──────────────────────────────────────────────────────────────
 

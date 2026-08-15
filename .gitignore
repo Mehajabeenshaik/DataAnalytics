@@ -12,6 +12,7 @@ __pycache__/
 # Plaintext DBs are gitignored (contain real data).
 *.db
 *.db.key
+*.db.bak
 
 # Encrypted DBs (*.db.enc) are generated at runtime — do NOT ship them
 # in the repo. Users generate their own demo/PII data.

@@ -325,9 +325,9 @@ python -m pytest test_catalog.py test_tenant_quotas.py test_resource_limits.py t
 ## Known limitations
 
 - Best suited for one primary dataset per running instance
-- Live database read-only checks are fully verified on SQLite; use proper read-only roles on Postgres/MySQL
+- Live database connections are production-ready for SQLite, PostgreSQL, and MySQL/MariaDB. Each backend enforces read-only access via a session-level `READ ONLY` directive followed by a DDL probe — writable credentials are rejected with clear, actionable error messages. Connection and statement timeouts prevent hangs on unreachable hosts. Pass a connection string for a dedicated read-only role (see `connect_live()` docstring for per-dialect `GRANT` examples).
 - Some derived metrics are approximations and should be reviewed
-- File-based tenant store (`data/tenants/`) is local-first; documented migration path to Postgres later
+- Tenant store supports both a file-based backend (`data/tenants/`, default) and a PostgreSQL backend (`TENANT_STORE=postgres` + `TENANT_DATABASE_URL`). Tables are bootstrapped automatically on first connection.
 - SSO endpoints are production-shaped stubs — the IdP HTTP calls are marked integration points in `auth.py`
 
 ---

@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 
 from pydantic import BaseModel
 
-from tenant import validate_api_key, Tenant
+from tenant import validate_api_key, WidgetTenant as Tenant
 from session_manager import SessionManager
 from data_source import DataSource
 from llm_provider import get_provider

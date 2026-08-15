@@ -10,6 +10,33 @@ services:
       - LLM_PROVIDER=ollama
       - OLLAMA_BASE_URL=http://host.docker.internal:11434
       - OLLAMA_MODEL=nemotron-3-nano:4b
+      # Tenant store — set to postgres to use the Postgres backend
+      - TENANT_STORE=file
+      # Uncomment and set when TENANT_STORE=postgres:
+      # - TENANT_DATABASE_URL=postgresql://analytics:analytics@postgres:5432/tenantdb
+    depends_on:
+      postgres:
+        condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
     restart: always
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: analytics
+      POSTGRES_PASSWORD: analytics
+      POSTGRES_DB: tenantdb
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U analytics -d tenantdb"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

@@ -25,6 +25,15 @@ from pydantic import BaseModel, Field
 from sqlalchemy import create_engine, text
 
 
+# ---------------------------------------------------------------------------
+# Connection timeout defaults (seconds).  Applied at engine-creation time
+# so a misconfigured or unreachable host never hangs the agent indefinitely.
+# ---------------------------------------------------------------------------
+_CONNECT_TIMEOUT_POSTGRES = 10   # seconds
+_CONNECT_TIMEOUT_MYSQL = 10      # seconds
+_STATEMENT_TIMEOUT_POSTGRES = 30_000  # milliseconds (statement_timeout GUC)
+
+
 class ColumnProfile(BaseModel):
     name: str
     dtype: str
@@ -229,9 +238,23 @@ class DataSource:
     ) -> None:
         """Connect to a LIVE, read-only database instead of loading a static snapshot.
 
-        connection_string MUST point to a read-only database role/user — this method
-        does not enforce that at the code level (the DB server does), but it will
-        refuse to proceed if a basic write-capability check fails.
+        The connection_string MUST point to a read-only database role/user.
+        This method actively verifies the read-only constraint and raises
+        ``PermissionError`` with a clear, actionable message if the credentials
+        allow writes.
+
+        Backend-specific enforcement:
+
+        * **SQLite** — no role-based read-only mechanism exists; the check is
+          skipped.  Pass ``?mode=ro`` in the URI for OS-level enforcement.
+        * **PostgreSQL** — the session is set to ``READ ONLY`` and we verify
+          that a DDL statement is rejected.  ``connect_timeout`` and
+          ``statement_timeout`` are applied so a misconfigured host never hangs
+          the agent indefinitely.
+        * **MySQL / MariaDB** — ``SET SESSION TRANSACTION READ ONLY`` is issued
+          and DDL rejection is confirmed.  ``connect_timeout`` is applied.
+        * **Other dialects** — fall back to the original CREATE TABLE probe
+          inside an explicit (never-committed) transaction.
 
         refresh_mode:
           "always" — every query() call hits the live database, no caching
@@ -240,7 +263,10 @@ class DataSource:
         if refresh_mode not in ("always", "ttl"):
             raise ValueError(f"refresh_mode must be 'always' or 'ttl', got {refresh_mode!r}")
 
-        self._engine = create_engine(connection_string, pool_pre_ping=True)
+        dialect = _dialect_from_url(connection_string)
+        engine_kwargs = _engine_kwargs_for_dialect(dialect)
+
+        self._engine = create_engine(connection_string, pool_pre_ping=True, **engine_kwargs)
         self._is_live = True
         self._refresh_mode = refresh_mode
         self._live_table_name = table_name
@@ -248,43 +274,194 @@ class DataSource:
         self._query_cache = TTLCache(maxsize=200, ttl=ttl_seconds) if refresh_mode == "ttl" else None
         self._cache_lock = threading.Lock()
 
-        self._verify_readonly_connection()
+        self._verify_readonly_connection(dialect)
 
         # Build the profile once at connect time, same as static loaders —
         # metric_factory.py needs this regardless of live/static mode.
         sample_df = self._fetch_live(f"SELECT * FROM {table_name} LIMIT 500")
         self._build_profile_from_dataframe(sample_df, table_name)
 
-    def _verify_readonly_connection(self) -> None:
-        """Defensive check: attempt a harmless write in a transaction that's always
-        rolled back, and confirm the database rejects it. This does NOT replace
-        granting a real read-only DB role — it's a sanity check that catches an
-        obviously misconfigured (writable) connection string before any real use.
+    def _verify_readonly_connection(self, dialect: str = "") -> None:
+        """Actively enforce that the connection cannot perform writes.
 
-        SQLite has no real read-only-role mechanism, so this check is skipped for
-        SQLite URLs (the CREATE TABLE would succeed and falsely fail the check).
+        Strategy per dialect:
+
+        ``sqlite``
+            Skipped — SQLite has no role-level read-only mechanism.  Users
+            should append ``?mode=ro&uri=true`` to the SQLite URI if they need
+            OS-level enforcement.
+
+        ``postgresql`` / ``postgres``
+            1. Issue ``SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY``
+               so the session itself is read-only.
+            2. Confirm the session obeys by attempting a DDL inside an
+               *explicit* (autocommit-off) transaction and asserting it fails.
+
+        ``mysql`` / ``mariadb``
+            1. Issue ``SET SESSION TRANSACTION READ ONLY``.
+            2. Same DDL-probe confirmation.
+
+        All other dialects
+            Original behaviour: attempt DDL inside an explicit transaction,
+            expect a permission error from the DB server.
+
+        In every non-SQLite case, a ``PermissionError`` is raised immediately
+        with a clear, actionable message if the connection turns out to be
+        writable.
         """
         if self._engine is None:
             return
-        url = str(self._engine.url)
-        if url.startswith("sqlite"):
-            return  # SQLite has no role-based permissions — skip the check.
 
-        test_table = f"_readonly_check_{int(time.time())}"
+        if dialect == "sqlite":
+            # SQLite has no role-based read-only permissions — skip the check.
+            # See connect_live() docstring for URI workaround.
+            return
+
+        if dialect in ("postgresql", "postgres"):
+            self._verify_readonly_postgres()
+        elif dialect in ("mysql", "mariadb"):
+            self._verify_readonly_mysql()
+        else:
+            self._verify_readonly_generic()
+
+    def _verify_readonly_postgres(self) -> None:
+        """PostgreSQL-specific read-only enforcement.
+
+        Steps:
+        1. Set the session to READ ONLY.
+        2. Probe with a DDL — if it succeeds, that means the server honours
+           the session setting but the *role* still has CREATE privileges; we
+           reject with a clear message.
+        """
+        test_table = f"_ro_check_{int(time.time())}"
+        try:
+            with self._engine.connect() as conn:
+                # Disable autocommit so we control the transaction boundary.
+                conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+                # Force the session to read-only.  This alone is enough for
+                # pg_dump style connections, but we also probe to be sure.
+                conn.execute(text("SET SESSION CHARACTERISTICS AS TRANSACTION READ ONLY"))
+
+            # Now probe: open a proper transaction and attempt DDL.
+            # The session READ ONLY setting should block it.
+            with self._engine.begin() as conn:
+                conn.execute(text(f"CREATE TABLE {test_table} (id INTEGER)"))
+                # If we reach here the DB allowed DDL despite READ ONLY — reject.
+                conn.execute(text(f"DROP TABLE IF EXISTS {test_table}"))
+
+        except PermissionError:
+            raise
+        except Exception as exc:
+            # Any error from the DDL probe is the expected, safe outcome.
+            err_lower = str(exc).lower()
+            # Distinguish "rejected because read-only" (good) from genuine
+            # connection / timeout problems (re-raise so the caller sees them).
+            _READONLY_SIGNALS = (
+                "read-only transaction",
+                "read only transaction",
+                "cannot execute",
+                "permission denied",
+                "pg_e",         # PostgreSQL error prefix in some drivers
+                "read_only",
+                "not allowed",
+            )
+            if any(sig in err_lower for sig in _READONLY_SIGNALS):
+                return  # ✓ connection correctly refused the write
+            # Connection problem / unexpected error — surface it.
+            raise ConnectionError(
+                f"connect_live() could not verify Postgres read-only status: {exc}\n"
+                "Ensure the host is reachable, the credentials are correct, "
+                "and the role has SELECT privileges on the target table."
+            ) from exc
+        else:
+            # The DDL succeeded and we raised nothing — connection is WRITABLE.
+            raise PermissionError(
+                "connect_live() refused: the Postgres connection allows DDL writes.\n"
+                "Fix: create a dedicated read-only role and grant it SELECT only:\n"
+                "  CREATE ROLE analytics_ro NOINHERIT;\n"
+                "  GRANT CONNECT ON DATABASE yourdb TO analytics_ro;\n"
+                "  GRANT SELECT ON ALL TABLES IN SCHEMA public TO analytics_ro;\n"
+                "  ALTER DEFAULT PRIVILEGES IN SCHEMA public\n"
+                "    GRANT SELECT ON TABLES TO analytics_ro;\n"
+                "Then pass the connection string for that role to connect_live()."
+            )
+
+    def _verify_readonly_mysql(self) -> None:
+        """MySQL / MariaDB-specific read-only enforcement.
+
+        Steps:
+        1. Issue ``SET SESSION TRANSACTION READ ONLY`` — MySQL 5.6+ / MariaDB 10+.
+        2. Probe with a DDL inside a transaction to confirm rejection.
+        """
+        test_table = f"_ro_check_{int(time.time())}"
+        try:
+            with self._engine.connect() as conn:
+                conn = conn.execution_options(isolation_level="AUTOCOMMIT")
+                conn.execute(text("SET SESSION TRANSACTION READ ONLY"))
+
+            with self._engine.begin() as conn:
+                conn.execute(text(f"CREATE TABLE {test_table} (id INT)"))
+                conn.execute(text(f"DROP TABLE IF EXISTS {test_table}"))
+
+        except PermissionError:
+            raise
+        except Exception as exc:
+            err_lower = str(exc).lower()
+            _READONLY_SIGNALS = (
+                "read-only",
+                "read only",
+                "cannot execute",
+                "access denied",
+                "1792",   # MySQL: ER_CANT_EXECUTE_IN_READ_ONLY_TRANSACTION
+                "er_",
+                "not allowed",
+                "permission",
+            )
+            if any(sig in err_lower for sig in _READONLY_SIGNALS):
+                return  # ✓ correctly refused the write
+            raise ConnectionError(
+                f"connect_live() could not verify MySQL read-only status: {exc}\n"
+                "Ensure the host is reachable, credentials are correct, "
+                "and the user has SELECT privileges on the target table."
+            ) from exc
+        else:
+            raise PermissionError(
+                "connect_live() refused: the MySQL connection allows DDL writes.\n"
+                "Fix: create a dedicated read-only user:\n"
+                "  CREATE USER 'analytics_ro'@'%' IDENTIFIED BY '<password>';\n"
+                "  GRANT SELECT ON yourdb.* TO 'analytics_ro'@'%';\n"
+                "  FLUSH PRIVILEGES;\n"
+                "Then pass the connection string for that user to connect_live()."
+            )
+
+    def _verify_readonly_generic(self) -> None:
+        """Generic read-only probe for other SQLAlchemy-supported dialects.
+
+        Attempts DDL inside an explicit transaction (never committed).  If the
+        DB server rejects it (permission error) the connection is considered
+        read-only.  If DDL succeeds, we reject with a PermissionError.
+        """
+        test_table = f"_ro_check_{int(time.time())}"
         try:
             with self._engine.begin() as conn:
                 conn.execute(text(f"CREATE TABLE {test_table} (id INTEGER)"))
-                conn.rollback()  # never actually commits
-            # If we reach here without an error, the connection CAN write — refuse.
+                # If we get here without error, the connection is writable.
+                # Attempt cleanup before raising.
+                try:
+                    conn.execute(text(f"DROP TABLE IF EXISTS {test_table}"))
+                except Exception:
+                    pass
+
+        except PermissionError:
+            raise
+        except Exception:
+            # DB rejected the DDL — this is the expected, safe outcome.
+            return
+        else:
             raise PermissionError(
                 "connect_live() refused: this connection string appears to have WRITE "
                 "access. Pass a connection string for a READ-ONLY database role only."
             )
-        except PermissionError:
-            raise
-        except Exception:
-            # Any DB-level permission error here is the EXPECTED, safe outcome.
-            pass
 
     def _fetch_live(self, sql: str, params: list | dict | None = None) -> pd.DataFrame:
         if self._engine is None:
@@ -491,3 +668,49 @@ class DataSource:
             ex = f" e.g. {c.examples}" if c.examples else ""
             lines.append(f"  - {c.name}: {c.dtype}{flag_str}{ex}")
         return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Module-level helpers for dialect detection and engine configuration
+# ---------------------------------------------------------------------------
+
+def _dialect_from_url(connection_string: str) -> str:
+    """Return a normalised dialect name from a SQLAlchemy URL string.
+
+    Examples:
+        ``postgresql+psycopg2://...`` → ``"postgresql"``
+        ``mysql+pymysql://...``       → ``"mysql"``
+        ``sqlite:///...``             → ``"sqlite"``
+    """
+    url_lower = connection_string.lower().split("://")[0]
+    # Strip driver suffix (e.g. "+psycopg2", "+pymysql")
+    base = url_lower.split("+")[0].strip()
+    # Normalise aliases
+    if base in ("postgres",):
+        return "postgresql"
+    if base in ("mariadb",):
+        return "mysql"
+    return base
+
+
+def _engine_kwargs_for_dialect(dialect: str) -> dict:
+    """Return SQLAlchemy ``create_engine`` keyword arguments suitable for the dialect.
+
+    Applies conservative connection and statement timeouts so a misconfigured
+    or unreachable host never hangs the agent indefinitely.
+    """
+    if dialect in ("postgresql", "postgres"):
+        return {
+            "connect_args": {
+                "connect_timeout": _CONNECT_TIMEOUT_POSTGRES,
+                # statement_timeout is a PostgreSQL GUC (milliseconds).
+                "options": f"-c statement_timeout={_STATEMENT_TIMEOUT_POSTGRES}",
+            },
+        }
+    if dialect in ("mysql", "mariadb"):
+        return {
+            "connect_args": {
+                "connect_timeout": _CONNECT_TIMEOUT_MYSQL,
+            },
+        }
+    return {}

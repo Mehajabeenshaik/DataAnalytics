@@ -2,6 +2,7 @@ from __future__ import annotations
 from urllib.parse import urlencode
 from .base import SSOUser
 
+
 class LocalSSOProvider:
     def enabled(self) -> bool:
         return True
@@ -18,4 +19,9 @@ class LocalSSOProvider:
         if not email or "@" not in email:
             raise ValueError("email required for local SSO")
         name = (params.get("name") or email.split("@")[0]).strip()
-        return SSOUser(email=email, name=name, external_id=f"local:{email}", provider="local")
+        return SSOUser(
+            email=email,
+            name=name,
+            external_id=f"local:{email}",
+            provider="local",
+        )

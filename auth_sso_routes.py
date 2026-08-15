@@ -1,35 +1,45 @@
-from fastapi import APIRouter, Depends, HTTPException
-from sso.local import LocalSSOProvider, SSOUser
+from __future__ import annotations
+from datetime import datetime, timedelta
+from fastapi import APIRouter, HTTPException
+from sso.factory import get_sso_provider
 
-router = APIRouter(prefix="/auth/sso", tags=["sso"])
+sso_router = APIRouter(prefix="/auth/sso", tags=["sso"])
 
 
-@router.post("/local")
-async def local_sso_login(
-    email: str,
-    name: str = "",
-    tenant_id: str = "",
-    roles: list = [],
-    provider: LocalSSOProvider = Depends(get_sso_provider),
-):
-    user = provider.handle_callback({"email": email, "name": name})
-    from auth import create_access_token
-    from config import JWT_SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRE_MINUTES
-    import json
+@sso_router.post("/local")
+def sso_local(payload: dict):
+    provider = get_sso_provider()
+    try:
+        sso_user = provider.handle_callback(payload or {})
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
-    access_token = create_access_token(
-        data={"sub": user.email, "tenant_id": tenant_id, "roles": roles},
-        secret_key=JWT_SECRET_KEY,
-        algorithm=JWT_ALGORITHM,
-        expires_minutes=JWT_EXPIRE_MINUTES,
-    )
+    tenant_id = (payload or {}).get("tenant_id")
+    roles = (payload or {}).get("roles") or ["admin"]
+    if isinstance(roles, str):
+        roles = [roles]
 
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "email": user.email,
+    token_data = {
+        "sub": sso_user.email,
+        "email": sso_user.email,
         "tenant_id": tenant_id,
         "roles": roles,
     }
-</task_progress>
-</write_to_file>
+
+    try:
+        from auth import create_access_token
+        token = create_access_token(token_data)
+    except Exception:
+        from jose import jwt
+        from config import JWT_SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRE_MINUTES
+        to_encode = dict(token_data)
+        to_encode["exp"] = datetime.utcnow() + timedelta(minutes=int(JWT_EXPIRE_MINUTES))
+        token = jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
+
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "email": sso_user.email,
+        "tenant_id": tenant_id,
+        "roles": roles,
+    }

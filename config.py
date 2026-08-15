@@ -70,8 +70,18 @@ DEFAULT_QUERY_TIMEOUT_SECONDS = int(os.getenv("DEFAULT_QUERY_TIMEOUT_SECONDS", "
 TENANT_ISOLATION_ENABLED = os.getenv("TENANT_ISOLATION_ENABLED", "true").lower() == "true"
 DEFAULT_TENANT_ID = os.getenv("DEFAULT_TENANT_ID", "default")  # local demo only
 
+# ── Tenant store backend ──────────────────────────────────────────────────
+# TENANT_STORE=file      → file-based store under data/tenants/ (default)
+# TENANT_STORE=postgres  → PostgreSQL store (requires TENANT_DATABASE_URL)
+TENANT_STORE = os.getenv("TENANT_STORE", "file").strip().lower()
+TENANT_DATABASE_URL = os.getenv(
+    "TENANT_DATABASE_URL",
+    os.getenv("DATABASE_URL", ""),  # fall back to generic DATABASE_URL if set
+)
+
 OIDC_ENABLED = os.getenv("OIDC_ENABLED", "false").lower() == "true"
 OIDC_ISSUER = os.getenv("OIDC_ISSUER", "")
 OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "")
 OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
 OIDC_REDIRECT_URI = os.getenv("OIDC_REDIRECT_URI", "")
+

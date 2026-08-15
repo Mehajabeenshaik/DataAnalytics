@@ -1,14 +1,12 @@
 """
-File-based store for the enterprise identity layer.
+tenant/store.py — store factory + file-based implementation.
 
-Layout:
-  data/tenants/
-    orgs/<org_id>.yaml
-    tenants/<tenant_id>.yaml
-    users/<user_id>.yaml
-    memberships/<id>.yaml
+The file-based TenantStore class is preserved verbatim for full backward
+compatibility.  get_store() is the factory that selects between FileStore
+and PostgresTenantStore based on config.TENANT_STORE.
 
-Local-first; documented migration path to Postgres later.
+    TENANT_STORE=file      → FileTenantStore  (default)
+    TENANT_STORE=postgres  → PostgresTenantStore (requires psycopg2 + DATABASE_URL)
 """
 
 from __future__ import annotations
@@ -20,8 +18,21 @@ import yaml
 from .models import Org, Tenant, User, Membership
 
 
-class TenantStore:
-    """Low-level persistence for orgs, tenants, users, memberships."""
+# ---------------------------------------------------------------------------
+# File-based store (original implementation, unchanged)
+# ---------------------------------------------------------------------------
+
+class FileTenantStore:
+    """Low-level file-based persistence for orgs, tenants, users, memberships.
+
+    Layout::
+
+        data/tenants/
+            orgs/<org_id>.yaml
+            tenants/<tenant_id>.yaml
+            users/<user_id>.yaml
+            memberships/<id>.yaml
+    """
 
     def __init__(self, root: Path | str = Path("data/tenants")):
         self.root = Path(root)
@@ -135,3 +146,53 @@ class TenantStore:
                 continue
             result.append(m)
         return result
+
+
+# ---------------------------------------------------------------------------
+# Backward-compat alias
+# TenantStore is the name used everywhere else in the codebase.  It now
+# resolves to FileTenantStore so existing code needs zero changes.
+# ---------------------------------------------------------------------------
+
+TenantStore = FileTenantStore
+
+
+# ---------------------------------------------------------------------------
+# Factory
+# ---------------------------------------------------------------------------
+
+def get_store(
+    store_type: str | None = None,
+    *,
+    file_root: Path | str | None = None,
+    dsn: str | None = None,
+) -> FileTenantStore:  # return type is the structural supertype (duck-typed)
+    """Return the appropriate store based on config.TENANT_STORE.
+
+    Args:
+        store_type: Override for the store type (``"file"`` or ``"postgres"``).
+                    When *None* the value from ``config.TENANT_STORE`` is used.
+        file_root:  Override for the file store root directory.
+        dsn:        Override for the Postgres DSN.  When *None* the value from
+                    ``config.TENANT_DATABASE_URL`` is used.
+    """
+    if store_type is None:
+        from config import TENANT_STORE as _cfg_store
+        store_type = _cfg_store
+
+    store_type = (store_type or "file").strip().lower()
+
+    if store_type == "postgres":
+        if dsn is None:
+            from config import TENANT_DATABASE_URL as _cfg_dsn
+            dsn = _cfg_dsn
+        if not dsn:
+            raise RuntimeError(
+                "TENANT_STORE=postgres requires TENANT_DATABASE_URL to be set."
+            )
+        from .postgres_store import PostgresTenantStore
+        return PostgresTenantStore(dsn)  # type: ignore[return-value]
+
+    # Default: file
+    root = Path(file_root) if file_root else Path("data/tenants")
+    return FileTenantStore(root)

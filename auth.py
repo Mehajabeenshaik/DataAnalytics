@@ -39,6 +39,10 @@ app.include_router(widget_router)
 from admin_api import admin_router  # noqa: E402
 app.include_router(admin_router)
 
+# ── Mount SSO router ──────────────────────────────────────────────────────
+from auth_sso_routes import sso_router  # noqa: E402
+app.include_router(sso_router)
+
 
 def _get_auth_db():
     conn = sqlite3.connect(AUTH_DB_PATH)
@@ -291,20 +295,13 @@ async def register(user_data: UserCreate, admin: UserOut = Depends(require_admin
 
 @app.get("/admin/reseed", dependencies=[Depends(require_admin)])
 async def reseed_data():
-    # data_layer.py does not exist anywhere in this codebase — the previous
-    # implementation imported a nonexistent module and always crashed with
-    # ModuleNotFoundError on every call. Failing loudly and honestly until a
-    # real seeding pipeline (e.g. rebuilding ecommerce.db(.enc) from
-    # sample_sales_data.csv) is implemented, rather than crashing on an
-    # unrelated import error.
-    raise HTTPException(
-        status_code=501,
-        detail=(
-            "Reseeding is not implemented. Build a data_layer.init_db() "
-            "that repopulates ecommerce.db(.enc) from a known source "
-            "(e.g. sample_sales_data.csv), then wire it back in here."
-        ),
-    )
+    """Rebuild ecommerce.db (+ encrypted twin) with deterministic sample data."""
+    import asyncio
+    from data_layer import init_db
+
+    loop = asyncio.get_running_loop()
+    summary = await loop.run_in_executor(None, init_db)
+    return {"status": "reseeded", **summary}
 
 
 @app.get("/admin/pii-vault/{customer_id}", dependencies=[Depends(require_admin)])
