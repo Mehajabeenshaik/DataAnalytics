@@ -554,7 +554,7 @@ def _parse_synthesize_response(
         data = {
             "answer": _format_fallback_answer(serializable_results),
             "confidence": "low",
-            "caveats": [],
+            "caveats": ["Malformed synthesizer response"],
             "lineage": {
                 "metrics_or_tools_used": [r["target"] for r in results],
                 "filters_applied": {},

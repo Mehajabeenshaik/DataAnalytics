@@ -1,337 +1,223 @@
 # DataAnalytics
 
-**Governed AI Data Analyst Agent**
+**Governed AI for business data — without letting the model touch your database.**
 
-A local-first AI agent that answers natural-language questions about your data — without ever letting an LLM write SQL, touch your database directly, or see unmasked PII.
+Most "chat with your data" products solve the demo problem and create a production problem: the LLM writes SQL (or Python), runs it, and occasionally returns confident nonsense — sometimes over sensitive columns.
+
+DataAnalytics takes the opposite approach.
+
+> The model only **selects** from a human-approved metric catalog.  
+> Execution is **deterministic**.  
+> PII is **masked before** the model sees results.  
+> Every answer carries **confidence and lineage**.
+
+This is not another text-to-SQL wrapper. It is a **systems design for safe analytics agents**.
 
 ---
 
-## Why this exists
+## The problem
 
-Most "chat with your data" tools let an LLM generate SQL against your schema.  
-This is fast to build but unreliable: wrong answers look confident, and sensitive data can leak.
+Text-to-SQL agents fail in ways that matter to companies:
 
-This project takes a different approach:
+| Failure | Why it hurts |
+|---------|----------------|
+| Wrong joins / filters | Decisions on bad numbers |
+| Schema hallucination | Broken queries that look fluent |
+| PII in model context | Compliance and vendor risk |
+| Unbounded queries | Cost and availability risk |
+| No audit trail | You cannot explain "why this number?" |
 
-- The LLM only **selects** from a predefined catalog of metrics and statistical tools
-- All query execution is done by deterministic code
-- PII is masked before the model ever sees the data
-- Every answer includes confidence and clear lineage
+Shipping a chatbot is easy. Shipping **governed** answers is the real product.
 
 ---
 
 ## How it works
 
 ```
-Question
-   │
-   ▼
-┌────────────────────────────────────────────┐
-│  1. Plan        → LLM chooses metric/tool  │
-│  2. Execute     → Deterministic code runs  │
-│  3. Synthesize  → LLM writes the answer    │
-└────────────────────────────────────────────┘
-   │
-   ▼
-{
-  "answer": "Total revenue was $121 million",
-  "confidence": "high",
-  "metric_used": "total_revenue",
-  "filters_used": {...}
-}
+Natural-language question
+        │
+        ▼
+┌───────────────────┐
+│  1. Plan          │  LLM chooses approved metrics / stats tools only
+└─────────┬─────────┘
+          ▼
+┌───────────────────┐
+│  2. Execute       │  Deterministic engine (DuckDB / parameterized live SQL)
+└─────────┬─────────┘
+          ▼
+┌───────────────────┐
+│  3. Synthesize    │  LLM writes the narrative from tool results only
+└─────────┬─────────┘
+          ▼
+   Answer + confidence + lineage + caveats
 ```
 
-The model never generates SQL or Python that gets executed.
+**Invariant:** the model never generates SQL or Python that gets executed.
 
 ---
 
-## Features
+## What you get
 
-- Natural language questions over your data
-- Automatic metric catalog generation
-- Statistical tools (describe, value counts, correlation, trends, outliers, etc.)
-- Static files (CSV) and live database connections
+**Analytics**
+- Natural-language questions over CSV and live databases
+- Auto-seeded metric catalog with propose → approve workflow
+- Statistical tools (describe, trends, correlation, outliers, …)
+- Multi-dataset registry
+
+**Safety & governance**
+- Approved-metric allowlist
 - PII detection and masking
-- Multiple LLM backends: Ollama (local), Gemini, NVIDIA NIM, vLLM
-- Response caching
-- JWT authentication and audit logging
-- Embeddable chat widget
+- Row limits, plan-step caps, query timeouts
+- Tenant isolation for catalog, data paths, and audit
+
+**B2B operations**
+- Per-tenant quotas
+- Structured observability
+- Audit log + export
+- JWT auth, API keys for the embeddable widget
+- Local SSO for pilots; OIDC integration points for Okta/Entra-style IdPs
+
+**Trust evidence**
+- Golden + adversarial eval suite
+- Published trust report (refusal quality, PII non-leak checks)
 
 ---
 
-## Quick Start
+## Quick start
 
 ```bash
-# 1. Install dependencies
 python -m pip install -r requirements.txt
 python -m spacy download en_core_web_sm
 
-# 2. Pull a local model (default)
+# Local model (default)
 ollama pull nemotron-3-nano:4b
 
-# 3. Configure
 cp .env.example .env
-python -c "import secrets; print(secrets.token_hex(32))"
-# Paste the output into JWT_SECRET_KEY in .env
+# Set JWT_SECRET_KEY to a long random secret
 
-# 4. Run the demo
 python demo.py
 ```
 
 Example:
 
-```
+```text
 Question: What is our total revenue?
-Answer: Your total revenue is over $121 million
-   Metric:     total_revenue
-   Confidence: high
+Answer:   Your total revenue is …
+Metric:   total_revenue
+Confidence: high
+```
+
+### Embeddable chat widget
+
+```html
+<script
+  src="http://YOUR_HOST:8000/widget/widget.js"
+  data-api-key="ak_..."
+  data-api-url="http://YOUR_HOST:8000">
+</script>
 ```
 
 ---
 
-## Using different LLM providers
+## LLM providers
 
-| Provider     | Setting in `.env`      | Needs API key? |
-|--------------|------------------------|----------------|
-| Ollama       | `LLM_PROVIDER=ollama`  | No             |
-| Google Gemini| `LLM_PROVIDER=gemini`  | Yes            |
-| NVIDIA NIM   | `LLM_PROVIDER=nvidia`  | Yes            |
-| vLLM         | `LLM_PROVIDER=vllm`    | No (self-hosted)|
+| Provider | `.env` | API key |
+|----------|--------|---------|
+| Ollama (local-first) | `LLM_PROVIDER=ollama` | No |
+| Google Gemini | `LLM_PROVIDER=gemini` | Yes |
+| NVIDIA NIM | `LLM_PROVIDER=nvidia` | Yes |
+| vLLM (self-hosted) | `LLM_PROVIDER=vllm` | Optional |
 
-No code changes are required — just update the environment variable.
-
----
-
-## Static vs Live data
-
-**Static (default)**
-```python
-source = DataSource(name="sales")
-source.load_file("sample_sales_data.csv")
-```
-
-**Live database**
-```python
-source = DataSource(name="sales")
-source.connect_live(
-    connection_string="postgresql://readonly_user:***@host/db",
-    refresh_mode="ttl",
-    ttl_seconds=30,
-)
-```
-
-Live mode only accepts read-only connections.
-
----
-
-## Safety guarantees
-
-| Guarantee                        | How it is enforced                          |
-|----------------------------------|---------------------------------------------|
-| No SQL injection                 | Parameterized and allowlisted queries only  |
-| No invented metrics or tools     | Strict validation against the real catalog  |
-| No unmasked PII sent to the LLM  | Masked at load time + second scrub          |
-| No confident wrong answers       | Falls back to `no_match` or low confidence  |
-| No writable live connections     | Rejected before any query runs              |
-
----
-
-## Project structure
-
-| File / Folder            | Purpose                                      |
-|--------------------------|----------------------------------------------|
-| `agent_phase2.py`        | Main agent (plan → execute → synthesize)     |
-| `agent_core.py`          | Metric execution                             |
-| `stats_tools.py`         | Statistical analysis tools                   |
-| `data_source.py`         | Data loading and profiling                   |
-| `metric_factory.py`      | Auto-generates the metric catalog            |
-| `llm_provider.py`        | LLM backend abstraction                      |
-| `pii_masker.py`          | PII detection and masking                    |
-| `api_widget.py`          | API for the embeddable chat widget           |
-| `benchmarks/`            | Latency measurement                          |
-| `eval/`                  | Accuracy evaluation                          |
-| `demo.py`                | Interactive command-line demo                |
-
----
-
-## Evaluation
-
-```bash
-python eval/run_eval.py        # single run
-python eval/run_eval_3x.py     # three runs for stability
-```
-
-## B2B Trust Report (Phase 3)
-
-Reproducible proof of answer quality, safe refusals, no PII leak, and no
-cross-tenant leak — the evidence serious buyers ask for.
-
-```bash
-# Offline trust eval (no GPU/API keys needed — uses a deterministic mock LLM)
-python eval/run_trust_eval.py --provider mock
-
-# With a real LLM
-python eval/run_trust_eval.py --provider ollama
-python eval/run_trust_eval.py --provider gemini
-
-# Pytest safety suite
-pytest test_trust_safety.py -q
-```
-
-- **Golden sets** live in `eval/golden/` (`sales_questions.jsonl`,
-  `pii_questions.jsonl`, `adversarial.jsonl`).
-- **PII leak detection** is in `eval/pii_checks.py` (regex for emails, phones,
-  addresses).
-- **Mock provider** (`eval/mock_provider.py`) enables CI without GPU/API keys.
-- **Results** are written to `eval/results/latest.json` and
-  [docs/TRUST_REPORT.md](docs/TRUST_REPORT.md).
-
-The Trust Report covers: accuracy proxy, refusal correctness, PII leak rate
-(target 0), unhandled error rate, and the safety guarantees tested.
+Air-gapped and VPC-friendly by design: run Ollama (or vLLM) so data never leaves your network.
 
 ---
 
 ## Deployment modes
 
-### 1. Local demo (single tenant)
-- `DEFAULT_TENANT_ID=default` — the only mode where a missing tenant context falls back.
-- `python demo.py` works unchanged.
+| Mode | Fit |
+|------|-----|
+| **Local** | Laptop demo, offline evaluation |
+| **VPC / on-prem** | Enterprise data stays in customer network |
+| **Multi-tenant API** | SaaS-style tenants, quotas, audit export |
 
-### 2. Multi-tenant SaaS
-- Set `TENANT_ISOLATION_ENABLED=true` (default).
-- Every request must carry a valid tenant context (JWT with `tenant_id` or `X-API-Key` for the widget).
-- Each tenant gets its own catalog root (`data/catalog/<tenant_id>/`), quota counters, observability log, and audit records.
-
-### 3. VPC / on-prem
-- Same isolation model; runs fully offline with Ollama or a self-hosted vLLM server.
-- No external IdP, Redis, or Postgres required for the core path.
+See [docs/SECURITY.md](docs/SECURITY.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), and [docs/SSO.md](docs/SSO.md).
 
 ---
 
-## Identity
-
-| Method   | When to use                                    | Notes                                          |
-|----------|------------------------------------------------|------------------------------------------------|
-| API key  | Widget embed (end users don't log in)          | `X-API-Key` header, identifies the company     |
-| JWT      | Interactive dashboard / admin                  | Username + password → short-lived JWT          |
-| OIDC/SSO | B2B pilots with SSO requirements               | `/auth/login/sso`, `/auth/callback`, `/auth/token` integration points (see `auth.py`) |
-
-After SSO login, the IdP user is mapped to our tenant store and the app issues its own short-lived JWT carrying `tenant_id` + roles.
-
-**RBAC roles:** `owner` / `admin` (approve metrics, export audit, manage org/tenants) · `analyst` (ask questions, propose metrics) · `viewer` (read answers only).
-
----
-
-## Threat model note
-
-Cross-tenant isolation is enforced **by construction**, not by convention:
-- **Separate catalog roots** — `CatalogService(tenant_id=...)` points to `data/catalog/<tenant_id>/`
-- **Auth context** — every `ask()`, catalog, and audit call receives an `AuthContext` with `tenant_id`
-- **Audit scoping** — `export_audit()` always filters by `tenant_id` in the WHERE clause
-- **Cache keys** — tenant_id is hashed into every cache key
-- No fallback to a global catalog when `TENANT_ISOLATION_ENABLED=true` (missing context → 401/403)
-
----
-
-## Tenant administration
+## Trust & evaluation
 
 ```bash
-# Create an org, tenant, and user
-python -m tenant.cli create-org "Acme Corp"
-python -m tenant.cli create-tenant <org_id> "Acme Analytics"
-python -m tenant.cli create-user admin@acme.com --name "Admin"
-python -m tenant.cli add-user admin@acme.com --role admin --tenant <tenant_id>
-
-# Usage & audit
-python -m tenant.cli usage <tenant_id>
-python -m tenant.cli export-audit <tenant_id> --days 30
+python eval/run_trust_eval.py --provider mock
+pytest test_trust_safety.py -q
 ```
 
-Per-tenant catalog path on disk:
-```
-data/catalog/<tenant_id>/
-  current/metrics.yaml
-  proposals/<uuid>.yaml
-  history/v001/...
-```
-
-Admin API (protected by admin/owner role):
-```
-GET  /admin/orgs
-POST /admin/orgs
-GET  /admin/tenants?org_id=...
-POST /admin/tenants
-GET  /admin/tenants/{tenant_id}/usage
-GET  /admin/tenants/{tenant_id}/catalog
-POST /admin/tenants/{tenant_id}/catalog/approve/{proposal_id}
-GET  /admin/tenants/{tenant_id}/audit/export?days=30
-```
+The [Trust Report](docs/TRUST_REPORT.md) summarizes pass rate, adversarial refusal behavior, and PII leak checks. Use a real provider (`ollama` / `gemini`) when you need semantic quality numbers for a pilot.
 
 ---
 
-## Phase 2: Quotas, resource limits, observability
+## Design-partner pilots
 
-- `tenant_quotas.py` — per-tenant daily query/LLM-call counters, row caps, file size caps. Persisted under `data/quotas/`.
-- `resource_limits.py` — deterministic enforcement of plan-step caps, max result rows, query timeouts.
-- `observability.py` — structured JSONL telemetry per tenant under `data/observability/`.
-- `audit_logger.py` — every audit record now carries `tenant_id`; `export_audit(tenant_id)` returns only that tenant's records.
+We designed a two-week pilot path for teams that want governed Q&A on their own data:
 
-### How quotas/limits are enforced (call chain)
+1. Deploy local or Docker  
+2. Create org / tenant  
+3. Load data and approve metrics  
+4. Ask questions via demo or widget  
+5. Export audit log  
 
-```
-ask(question, ds, provider, tenant_id)
-  → check_and_consume_query_quota(tenant_id)     # raises QuotaExceededError → HTTP 429
-  → the_plan.steps[: max_plan_steps()]           # plan-step cap
-  → run_with_timeout(_execute)                   # query timeout
-  → apply_row_limit(result)                      # row cap on every result
-  → synthesize(...)
-  → log_agent_run(...)                           # observability (no PII)
-  → log_action(..., tenant_id)                   # tenant-scoped audit
-```
-
-### Audit export
-
-```bash
-# CLI
-python -m tenant.cli export-audit <tenant_id> --days 30
-
-# API (admin JWT required) — JSON or CSV
-curl -H "Authorization: Bearer <admin_jwt>" \
-  "http://localhost:8000/admin/tenants/<tenant_id>/audit/export?days=30&format=csv"
-```
-
-### Example observability log line
-
-```json
-{"timestamp": "2026-08-14T10:00:00Z", "tenant_id": "tenant_a", "event_type": "agent_run",
- "details": {"plan_type": "single_metric", "metrics_or_tools": ["total_revenue"],
-             "latency_ms": 1234, "confidence": "high", "error": null}}
-```
-
-## Security & pilot docs
-
-- [docs/SECURITY.md](docs/SECURITY.md) — safety model, data flow, tenant isolation, PII, deployment modes
-- [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md) — assets, threats, controls, residual risks
-- [docs/PILOT.md](docs/PILOT.md) — 2-week design-partner pilot guide
-
-## Tests
-
-```bash
-python -m pytest test_catalog.py test_tenant_quotas.py test_resource_limits.py test_tenant_isolation.py test_rbac.py test_catalog_tenant_scoped.py -q
-```
+Details: [docs/PILOT.md](docs/PILOT.md).
 
 ---
 
-## Known limitations
+## Architecture principles (for engineers)
 
-- Multiple named datasets per session are supported (see `dataset_registry.py`); when only one dataset is loaded, behavior is identical to the original single-dataset flow
-- Live database connections are production-ready for SQLite, PostgreSQL, and MySQL/MariaDB. Each backend enforces read-only access via a session-level `READ ONLY` directive followed by a DDL probe — writable credentials are rejected with clear, actionable error messages. Connection and statement timeouts prevent hangs on unreachable hosts. Pass a connection string for a dedicated read-only role (see `connect_live()` docstring for per-dialect `GRANT` examples).
-- Some derived metrics are approximations and should be reviewed
-- Tenant store supports both a file-based backend (`data/tenants/`, default) and a PostgreSQL backend (`TENANT_STORE=postgres` + `TENANT_DATABASE_URL`). Tables are bootstrapped automatically on first connection.
-- SSO endpoints are production-shaped stubs — the IdP HTTP calls are marked integration points in `auth.py`
+1. **Capability, not creativity, at execution time** — the planner picks from an allowlist.  
+2. **Determinism where it matters** — aggregates and stats run in code/SQL you control.  
+3. **Least data to the model** — mask PII; send results, not raw warehouses.  
+4. **Tenant as isolation boundary** — catalog, quotas, audit, and data paths are scoped.  
+5. **Observable by default** — structured logs and audit events on agent runs.  
+6. **Evidence over claims** — eval suites and a regenerable trust report.
+
+This is the difference between a weekend agent demo and software you can put in front of a security review.
 
 ---
 
-## License
+## Project layout (high level)
 
-[Add your license here]
+| Path | Role |
+|------|------|
+| `agent_phase2.py` | Plan → execute → synthesize agent |
+| `catalog/` | Versioned metric catalog + approval |
+| `stats_tools.py` | Deterministic statistical tools |
+| `data_source.py` | CSV / live DB load, profiling, PII |
+| `tenant/` | Org/tenant identity + isolation |
+| `sso/` + `auth_sso_routes.py` | Local SSO; OIDC hooks in `auth.py` |
+| `api_widget.py` + `widget/` | Embeddable chat bot |
+| `eval/` | Trust eval, golden sets, adversarial cases |
+| `docs/` | Security, threat model, pilot, trust report |
+
+---
+
+## Roadmap posture
+
+**Done:** governed agent, catalog workflow, multi-tenant limits, audit, trust eval, local SSO, live DB paths, multi-dataset registry.
+
+**Next:** production OIDC against a real IdP, richer admin UX for metric approval, expanded customer golden sets from pilots.
+
+---
+
+## Who this is for
+
+- Data / platform teams who cannot accept unconstrained text-to-SQL  
+- Founders building B2B analytics copilots who need a **safety story**  
+- Engineers studying **ML systems** (tool allowlists, isolation, eval, not only prompts)
+
+---
+
+## License & contact
+
+See repository license. For design-partner pilots or engineering collaboration, open an issue or reach out via the profile linked on GitHub.
+
+---
+
+*Built as a flagship systems project: safe agents are an architecture problem, not a prompt problem.*

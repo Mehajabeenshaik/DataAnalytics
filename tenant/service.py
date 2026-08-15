@@ -57,6 +57,14 @@ class TenantService:
         self.store.save_user(user)
         return user
 
+    def ensure_user(self, email: str, name: str = "") -> User:
+        """Idempotent create-or-fetch for SSO flows."""
+        return self.create_user(email=email, display_name=name)
+
+    def list_memberships_for_user(self, user_id: str) -> list[Membership]:
+        """Return all memberships for a user (used by SSO tenant resolution)."""
+        return self.store.list_memberships(user_id=user_id)
+
     def get_user(self, user_id: str) -> User | None:
         return self.store.load_user(user_id)
 
