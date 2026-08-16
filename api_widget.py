@@ -67,6 +67,7 @@ class UploadResponse(BaseModel):
     columns: int
     summary: str
     sections: list[dict] = []
+    insights: list[dict] = []
 
 
 class AskRequest(BaseModel):
@@ -344,6 +345,27 @@ async def upload_file(
         # Run baseline analysis (deterministic, no LLM)
         summary, sections = _build_baseline_analysis(ds)
 
+        # Phase 9 — proactive insights. Runs a fixed set of deterministic
+        # checks against the loaded/profiled dataset (no free-form LLM
+        # analysis). Attach a chart where the raw step is chartable, then
+        # strip the internal step shape from what the client receives.
+        insights: list[dict] = []
+        try:
+            from insights import generate_insights
+            from chart_builder import build_chart_spec
+            from catalog.service import CatalogService
+
+            catalog_service = CatalogService(tenant_id=tenant.api_key)
+            insights = generate_insights(ds, catalog_service)
+            for ins in insights:
+                if ins.get("step"):
+                    chart = build_chart_spec(ins["step"])
+                    if chart:
+                        ins["chart"] = chart
+                ins.pop("step", None)  # don't leak internal step shape to the client
+        except Exception:
+            insights = []
+
         return UploadResponse(
             session_id=session_id,
             filename=file.filename,
@@ -351,6 +373,7 @@ async def upload_file(
             columns=ds.profile.n_cols if ds.profile else 0,
             summary=summary,
             sections=sections,
+            insights=insights,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

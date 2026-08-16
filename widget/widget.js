@@ -311,6 +311,22 @@
   function renderAnalysis(data) {
     addMsg(`<strong>${data.summary}</strong>`);
 
+    // Phase 9 — proactive insights. Show a short "things worth knowing"
+    // block only when the server returned insights; nothing extra otherwise.
+    const insights = data.insights || [];
+    if (insights.length) {
+      let html = `<strong style="color:${THEME}">✨ Here's what stood out</strong>`;
+      insights.forEach(ins => {
+        html += `<div style="margin-top:8px;">`;
+        html += `<div style="font-weight:600;font-size:13px;">${esc(ins.title || "Insight")}</div>`;
+        if (ins.detail) html += `<div style="font-size:12px;color:#aaa;margin-top:2px;">${esc(ins.detail)}</div>`;
+        const chartHtml = renderChartHtml(ins.chart);
+        if (chartHtml) html += chartHtml;
+        html += `</div>`;
+      });
+      addMsg(html);
+    }
+
     for (const sec of (data.sections || [])) {
       if (sec.type === "table" && Array.isArray(sec.data) && sec.data.length) {
         const keys = Object.keys(sec.data[0]);
