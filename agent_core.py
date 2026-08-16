@@ -110,29 +110,43 @@ def run_metric(ds: DataSource, metric: dict, filters: dict) -> Any:
         params.append(v)
     where_sql = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
-    if agg == "sum":
-        if groupby:
-            sql = (
-                f'SELECT "{groupby}" AS key, SUM("{col}") AS value '
-                f"FROM {table}{where_sql} GROUP BY 1 ORDER BY value DESC"
-            )
-            return ds.query(sql, params).set_index("key")["value"]
-        sql = f'SELECT SUM("{col}") FROM {table}{where_sql}'
-        return float(ds.query(sql, params).iloc[0, 0] or 0)
+    # Aggregation -> SQL function map. MAX/MIN were added because
+    # metric_factory.generate_metrics() emits max_*/min_* metrics — without
+    # these entries, selecting one throws "Unknown aggregation".
+    SQL_AGG = {
+        "sum": "SUM",
+        "mean": "AVG",
+        "count": "COUNT",
+        "nunique": "COUNT(DISTINCT ",
+        "max": "MAX",
+        "min": "MIN",
+    }
 
-    if agg == "mean":
-        sql = f'SELECT AVG("{col}") FROM {table}{where_sql}'
-        return float(ds.query(sql, params).iloc[0, 0] or 0)
+    if agg not in SQL_AGG:
+        raise ValueError(f"Unknown aggregation: {agg}")
+
+    # nunique isn't a plain function name in the map (COUNT(DISTINCT col)),
+    # and it only ever runs ungrouped in the metric factory (groupby=None).
+    # Handle it as a dedicated scalar branch BEFORE the groupby path so we
+    # never generate unbalanced `COUNT(DISTINCT ("col")` SQL.
+    if agg == "nunique":
+        sql = f'SELECT COUNT(DISTINCT "{col}") FROM {table}{where_sql}'
+        return int(ds.query(sql, params).iloc[0, 0])
+
+    if groupby:
+        sql = (
+            f'SELECT "{groupby}" AS key, {SQL_AGG[agg]}("{col}") AS value '
+            f"FROM {table}{where_sql} GROUP BY 1 ORDER BY value DESC"
+        )
+        return ds.query(sql, params).set_index("key")["value"]
 
     if agg == "count":
         sql = f"SELECT COUNT(*) FROM {table}{where_sql}"
         return int(ds.query(sql, params).iloc[0, 0])
 
-    if agg == "nunique":
-        sql = f'SELECT COUNT(DISTINCT "{col}") FROM {table}{where_sql}'
-        return int(ds.query(sql, params).iloc[0, 0])
-
-    raise ValueError(f"Unknown aggregation: {agg}")
+    # sum/mean/max/min produce numeric scalars.
+    sql = f'SELECT {SQL_AGG[agg]}("{col}") FROM {table}{where_sql}'
+    return float(ds.query(sql, params).iloc[0, 0] or 0)
 
 
 # ── Step 3: explanation (LLM call #2) ─────────────────────────────────────

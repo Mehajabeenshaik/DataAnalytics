@@ -252,6 +252,30 @@ def test_run_metric_nunique(ds, metrics):
     assert result == 6
 
 
+def test_run_metric_max(ds, metrics):
+    """Regression: max_* metrics must execute (previously ValueError)."""
+    assert "max_revenue" in metrics
+    result = run_metric(ds, metrics["max_revenue"], {})
+    assert result == 400.0
+
+
+def test_run_metric_min(ds, metrics):
+    """Regression: min_* metrics must execute (previously ValueError)."""
+    assert "min_revenue" in metrics
+    result = run_metric(ds, metrics["min_revenue"], {})
+    assert result == 100.0
+
+
+def test_run_metric_max_with_filter(ds, metrics):
+    result = run_metric(ds, metrics["max_revenue"], {"region": "North"})
+    assert result == 300.0  # North revenues: 100, 300
+
+
+def test_run_metric_min_with_filter(ds, metrics):
+    result = run_metric(ds, metrics["min_revenue"], {"region": "South"})
+    assert result == 200.0  # South revenues: 200, 400
+
+
 def test_run_metric_groupby_sum(ds, metrics):
     result = run_metric(ds, metrics["revenue_by_region"], {})
     assert isinstance(result, pd.Series)
