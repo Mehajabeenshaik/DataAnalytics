@@ -35,10 +35,6 @@ app.add_middleware(
 from api_widget import widget_router  # noqa: E402
 app.include_router(widget_router)
 
-# ── Mount admin API router ────────────────────────────────────────────────
-from admin_api import admin_router  # noqa: E402
-app.include_router(admin_router)
-
 # ── Mount SSO router ──────────────────────────────────────────────────────
 from auth_sso_routes import sso_router  # noqa: E402
 app.include_router(sso_router)
@@ -165,22 +161,29 @@ async def root():
     <!DOCTYPE html>
     <html>
     <head>
-        <title>DaAna Chatbot Service</title>
+        <title>DataAnalytics API</title>
         <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif; background: #0e0e16; color: #eee; padding: 40px; max-width: 700px; margin: auto; line-height: 1.6; }
+            body { font-family: -apple-system, BlinkMacSystemFont, sans-serif;
+                   background: #0e0e16; color: #eee; padding: 40px; max-width: 700px;
+                   margin: auto; line-height: 1.6; }
             h1 { color: #7c5cfc; }
-            pre { background: #1a1a24; padding: 16px; border-radius: 8px; overflow-x: auto; color: #5ce1e6; font-size: 13px; }
-            .badge { display: inline-block; padding: 4px 10px; background: #34d39922; color: #34d399; border-radius: 4px; font-weight: 600; }
+            pre { background: #1a1a24; padding: 16px; border-radius: 8px;
+                  overflow-x: auto; color: #5ce1e6; font-size: 13px; }
+            .badge { display: inline-block; padding: 4px 10px; background: #34d39922;
+                     color: #34d399; border-radius: 4px; font-weight: 600; }
         </style>
     </head>
     <body>
-        <h1>📊 DaAna Chatbot Service is Live!</h1>
-        <p><span class="badge">✓ API Service Online</span></p>
-        <p>Your DataAnalytics chatbot backend is running. To embed the widget on any website, add this script tag:</p>
-        <pre>&lt;script src="https://dataanalytics-9104.onrender.com/widget/widget.js"
-        data-api-key="ak_demo_key_12345"
-        data-api-url="https://dataanalytics-9104.onrender.com"
-        data-theme-color="#7c5cfc"&gt;&lt;/script&gt;</pre>
+        <h1>DataAnalytics API is live</h1>
+        <p><span class="badge">OK</span> FastAPI backend running</p>
+        <p>If port 8000 is used by another app (e.g. Splunk), run on <b>8001</b>.</p>
+        <p>Embed the chat widget:</p>
+        <pre>&lt;script
+  src="http://127.0.0.1:8001/widget/widget.js"
+  data-api-key="ak_demo_key_12345"
+  data-api-url="http://127.0.0.1:8001"
+  data-theme-color="#7c5cfc"&gt;&lt;/script&gt;</pre>
+        <p>Or open <code>widget-test.html</code> in this repo.</p>
     </body>
     </html>
     """
@@ -327,3 +330,8 @@ async def get_pii_vault(customer_id: int):
     if not rows:
         raise HTTPException(status_code=404, detail="Customer not found in PII vault")
     return {"customer_id": customer_id, "pii_records": [dict(r) for r in rows]}
+
+
+# ── Late import avoids circular import: admin_api imports get_current_user from auth ──
+from admin_api import admin_router  # noqa: E402
+app.include_router(admin_router)

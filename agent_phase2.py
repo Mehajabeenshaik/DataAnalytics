@@ -34,6 +34,8 @@ from catalog.service import CatalogService
 from catalog.models import MetricDefinition as CatalogMetricDefinition
 from catalog.models import MetricProposal as CatalogMetricProposal
 
+from verification import verify_answer
+
 
 # ── PII defense-in-depth ──────────────────────────────────────────────────
 
@@ -410,9 +412,54 @@ def execute_plan(the_plan: Plan, ds: DataSource) -> list[dict]:
                 metric = metrics[step.target]
                 result = run_metric(ds, metric, step.filters)
                 result_entry["result"] = result
+
+                # Verification metadata (Phase 6): thread source row counts and
+                # breakdown/total pairs through so verify_answer() can run its
+                # computed sanity checks. These keys don't exist for every step
+                # type — the verifier no-ops when they're absent.
+                try:
+                    if metric["agg"] == "count":
+                        if ds.profile is not None and not ds.is_live():
+                            result_entry["_source_row_count"] = int(ds.profile.n_rows)
+                    elif metric["agg"] == "sum" and metric.get("groupby"):
+                        merged = {**metric.get("base_filters", {}), **step.filters}
+                        where_sql = ""
+                        params: list = []
+                        if merged:
+                            where_sql = " WHERE " + " AND ".join(f'"{k}" = ?' for k in merged)
+                            params = list(merged.values())
+                        total = ds.query(
+                            f'SELECT SUM("{metric["column"]}") FROM {ds.table_name}{where_sql}',
+                            params,
+                        ).iloc[0, 0]
+                        result_entry["_breakdown"] = result.to_dict()
+                        result_entry["_expected_total"] = float(total or 0)
+                except Exception:
+                    pass
             elif step.action == "run_stats":
                 result = run_stats_tool(ds, step.target, step.args)
                 result_entry["result"] = result
+
+                # Verification metadata for breakdown-vs-total checks.
+                try:
+                    if step.target == "group_compare" and step.args.get("agg", "sum") == "sum":
+                        value_col = step.args["value_col"]
+                        total = ds.query(
+                            f'SELECT SUM("{value_col}") FROM {ds.table_name}'
+                        ).iloc[0, 0]
+                        result_entry["_breakdown"] = result.to_dict()
+                        result_entry["_expected_total"] = float(total or 0)
+                    elif step.target == "trend":
+                        value_col = step.args["value_col"]
+                        date_col = step.args["date_col"]
+                        total = ds.query(
+                            f'SELECT SUM("{value_col}") FROM {ds.table_name} '
+                            f'WHERE "{date_col}" IS NOT NULL'
+                        ).iloc[0, 0]
+                        result_entry["_breakdown"] = result.set_index("period")["value"].to_dict()
+                        result_entry["_expected_total"] = float(total or 0)
+                except Exception:
+                    pass
         except Exception as e:
             result_entry["error"] = str(e)
 
@@ -560,6 +607,7 @@ def _parse_synthesize_response(
                 "filters_applied": {},
                 "notes": "Calculated via deterministic execution engine.",
             },
+            "_parse_failed": True,
         }
 
 
@@ -597,8 +645,9 @@ def synthesize(
                 "filters_applied": {},
                 "notes": "Calculated via deterministic execution engine.",
             },
+            "_parse_failed": True,
         }
-    # Also ensure malformed JSON from generate() yields low confidence
+    # Also ensure malformed JSON yields low confidence
     if data.get("confidence") not in ("low", "medium", "high"):
         data["confidence"] = "low"
     return data
@@ -895,6 +944,8 @@ def ask(
             for r in results:
                 if r.get("result") is not None and not r.get("error"):
                     r["result"] = apply_row_limit(r["result"])
+                    if isinstance(r["result"], pd.DataFrame) and r["result"].attrs.get("truncated"):
+                        r["_truncated"] = True  # verifier downgrades truncated runs
             return results
 
         results = run_with_timeout(_execute)
@@ -902,7 +953,18 @@ def ask(
 
         # 4. Synthesize
         answer = synthesize(question, the_plan, results, provider)
-        confidence = answer.get("confidence", "n/a")
+
+        # Phase 6 — computed confidence. Never trust the LLM's own field.
+        verification = verify_answer(the_plan, results, answer)
+        answer["confidence"] = verification["computed_confidence"]
+        if verification["flags"]:
+            caveats = answer.get("caveats") or []
+            caveats.extend(verification["flags"])
+            answer["caveats"] = caveats
+        # Log verification outcome via observability (no PII — target names only).
+        error = None if verification["passed"] else ",".join(verification["flags"])
+        confidence = answer["confidence"]
+        answer.pop("_parse_failed", None)  # internal metadata, not for clients
 
         response = {
             **answer,
@@ -1022,6 +1084,8 @@ def ask_stream(
             for r in results:
                 if r.get("result") is not None and not r.get("error"):
                     r["result"] = apply_row_limit(r["result"])
+                    if isinstance(r["result"], pd.DataFrame) and r["result"].attrs.get("truncated"):
+                        r["_truncated"] = True  # verifier downgrades truncated runs
             return results
 
         results = run_with_timeout(_execute)
@@ -1035,7 +1099,20 @@ def ask_stream(
             else:
                 final_answer = event
 
-        confidence = (final_answer or {}).get("confidence", "n/a")
+        if final_answer is not None:
+            # Phase 6 — computed confidence. Never trust the LLM's own field.
+            verification = verify_answer(the_plan, results, final_answer)
+            final_answer["confidence"] = verification["computed_confidence"]
+            if verification["flags"]:
+                caveats = final_answer.get("caveats") or []
+                caveats.extend(verification["flags"])
+                final_answer["caveats"] = caveats
+            # Log verification outcome via observability (no PII — target names only).
+            error = None if verification["passed"] else ",".join(verification["flags"])
+            confidence = final_answer["confidence"]
+            final_answer.pop("_parse_failed", None)  # internal marker, not for clients
+        else:
+            confidence = "n/a"
 
         response = {
             **(final_answer or {}),

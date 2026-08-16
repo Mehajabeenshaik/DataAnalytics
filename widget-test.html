@@ -1,0 +1,23 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>DataAnalytics Widget Test</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0e0e16; color: #eee;
+           max-width: 640px; margin: 48px auto; padding: 0 16px; }
+    h1 { color: #7c5cfc; }
+    code { background: #1a1a24; padding: 2px 6px; border-radius: 4px; }
+  </style>
+</head>
+<body>
+  <h1>DataAnalytics — Widget Test</h1>
+  <p>Start API: <code>python -m uvicorn auth:app --reload --host 127.0.0.1 --port 8001</code></p>
+  <p>Demo key: <code>ak_demo_key_12345</code></p>
+  <script
+    src="http://127.0.0.1:8001/widget/widget.js"
+    data-api-key="ak_demo_key_12345"
+    data-api-url="http://127.0.0.1:8001"
+    data-theme-color="#7c5cfc"></script>
+</body>
+</html>
