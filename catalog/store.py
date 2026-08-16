@@ -27,7 +27,7 @@ from pathlib import Path
 
 import yaml
 
-from .models import MetricDefinition, MetricProposal
+from .models import MetricDefinition, MetricProposal, JoinPolicy, JoinProposal
 
 
 class CatalogStore:
@@ -141,3 +141,47 @@ class CatalogStore:
     def list_pending(self) -> list[MetricProposal]:
         """Return only proposals still awaiting human review."""
         return [p for p in self.list_proposals() if p.status == "pending"]
+
+    # ── Join policies ─────────────────────────────────────────────────────
+
+    def load_approved_joins(self) -> dict[str, JoinPolicy]:
+        """Load the live approved join policies as {name: JoinPolicy}."""
+        path = self.current / "joins.yaml"
+        if not path.exists():
+            return {}
+        raw = yaml.safe_load(path.read_text()) or {}
+        return {k: JoinPolicy(**v) for k, v in raw.items()}
+
+    def save_approved_joins(self, joins: dict[str, JoinPolicy]) -> None:
+        """Persist the approved join policies."""
+        data = {k: v.model_dump(mode="json") for k, v in joins.items()}
+        (self.current / "joins.yaml").write_text(
+            yaml.dump(data, sort_keys=False), encoding="utf-8"
+        )
+
+    def save_join_proposal(self, proposal: JoinProposal) -> None:
+        """Persist a join proposal to proposals/join_<uuid>.yaml."""
+        path = self.proposals_dir / f"join_{proposal.proposal_id}.yaml"
+        path.write_text(
+            yaml.dump(proposal.model_dump(mode="json"), sort_keys=False),
+            encoding="utf-8",
+        )
+
+    def load_join_proposal(self, proposal_id: str) -> JoinProposal | None:
+        """Load a single join proposal by id, or None if it doesn't exist."""
+        path = self.proposals_dir / f"join_{proposal_id}.yaml"
+        if not path.exists():
+            return None
+        return JoinProposal(**yaml.safe_load(path.read_text()))
+
+    def list_pending_joins(self) -> list[JoinProposal]:
+        """Return only join proposals still awaiting human review."""
+        out = []
+        for p in self.proposals_dir.glob("join_*.yaml"):
+            try:
+                prop = JoinProposal(**yaml.safe_load(p.read_text()))
+                if prop.status == "pending":
+                    out.append(prop)
+            except Exception:
+                continue
+        return out

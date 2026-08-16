@@ -5,7 +5,6 @@ These are the durable, governed artifacts that replace the previous
 in-memory metric dicts. Every metric that reaches the LLM planner must be
 an approved MetricDefinition persisted in the catalog store.
 """
-
 from __future__ import annotations
 
 import uuid
@@ -51,6 +50,44 @@ class MetricProposal(BaseModel):
 
     proposal_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     metric: MetricDefinition
+    question: str
+    reason: str
+    proposed_by: str = "agent"
+    proposed_at: datetime = Field(default_factory=datetime.utcnow)
+    status: Literal["pending", "approved", "rejected"] = "pending"
+    review_note: str | None = None
+
+
+class JoinPolicy(BaseModel):
+    """A governed multi-table join policy.
+
+    Only instances with status == "approved" are ever exposed to the LLM
+    planner. The planner may reference a join_policy_name; the actual
+    left_table/right_table/keys are resolved server-side against the
+    approved catalog — the LLM never specifies arbitrary tables or keys.
+    """
+
+    name: str
+    left_table: str
+    right_table: str
+    left_key: str
+    right_key: str
+    join_type: Literal["inner", "left"] = "inner"
+    description: str = ""
+    status: Literal["draft", "pending", "approved", "rejected", "deprecated"] = "draft"
+    version: int = 1
+    created_by: str = "system"
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+    approved_by: str | None = None
+    approved_at: datetime | None = None
+    source: Literal["proposed", "manual"] = "proposed"
+
+
+class JoinProposal(BaseModel):
+    """A pending human-approval proposal for a new join policy."""
+
+    proposal_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    join: JoinPolicy
     question: str
     reason: str
     proposed_by: str = "agent"

@@ -89,14 +89,15 @@ Produce a plan in STRICT JSON only:
 {
   "can_answer": true | false,
   "reason": "short explanation",
-  "plan_type": "single_metric" | "stats_tool" | "multi_step" | "propose_metric" | "no_match",
+  "plan_type": "single_metric" | "stats_tool" | "multi_step" | "joined_metric" | "propose_metric" | "no_match",
   "steps": [
     {
       "step_id": 1,
       "action": "run_metric" | "run_stats",
       "target": "<metric_name or tool_name>",
       "filters": {"column": "value"},
-      "args": {}
+      "args": {},
+      "join_policy_name": "<approved join policy name or null>"
     }
   ]
 }
@@ -106,6 +107,7 @@ Rules:
 - Only use metric names that appear in the catalog.
 - Only use tool names from the allowed tools list: describe, value_counts, correlation, group_compare, missingness, trend.
 - For questions comparing totals/means across categories (e.g. "highest sales by region", "sales per region"), use plan_type="stats_tool", action="run_stats", target="group_compare", args={"value_col": "<numeric_col>", "group_col": "<cat_col>", "agg": "sum"}.
+- For questions that need data from two tables joined together, use plan_type="joined_metric" and set join_policy_name to one of the approved join policy names listed in context. Never invent a join_policy_name — only use the approved ones provided.
 - Filters may only use columns from the allowed filter list.
 - If the question needs a calculation that does not exist yet, use plan_type = "propose_metric".
 - Output ONLY valid JSON. No markdown, no extra text.
@@ -177,6 +179,7 @@ class PlanStep(BaseModel):
     target: str = ""
     filters: dict = {}
     args: dict = {}
+    join_policy_name: str | None = None
 
 
 class Plan(BaseModel):
@@ -224,7 +227,7 @@ def _build_planner_json_schema(metric_names: list[str], tool_names: list[str]) -
             "reason": {"type": "string"},
             "plan_type": {
                 "type": "string",
-                "enum": ["single_metric", "stats_tool", "multi_step", "propose_metric", "no_match"],
+                "enum": ["single_metric", "stats_tool", "multi_step", "joined_metric", "propose_metric", "no_match"],
             },
             "steps": {
                 "type": "array",
@@ -237,6 +240,7 @@ def _build_planner_json_schema(metric_names: list[str], tool_names: list[str]) -
                         "target": {"type": "string", "enum": targets} if targets else {"type": "string"},
                         "filters": {"type": "object"},
                         "args": {"type": "object"},
+                        "join_policy_name": {"type": ["string", "null"]},
                     },
                     "required": ["action", "target"],
                 },
@@ -321,6 +325,7 @@ def plan(
         return Plan(can_answer=False, reason="Malformed planner response", plan_type="no_match")
 
     metric_names = set(metrics.keys())
+    approved_joins = catalog_service.get_approved_joins()
     for step in the_plan.steps:
         if step.action not in ("run_metric", "run_stats"):
             step.action = "run_metric"
@@ -337,6 +342,17 @@ def plan(
                 reason=f"Tool '{step.target}' not in allowed tools",
                 plan_type="no_match",
             )
+
+        # Governed joins: the planner may only reference an APPROVED join
+        # policy name — never arbitrary table/key names. Same allowlist
+        # pattern as metrics.
+        if step.join_policy_name:
+            if step.join_policy_name not in approved_joins:
+                return Plan(
+                    can_answer=False,
+                    reason=f"Join policy '{step.join_policy_name}' is not approved",
+                    plan_type="no_match",
+                )
 
         step.filters = {
             k: v for k, v in step.filters.items() if k in allowed_filters
@@ -392,11 +408,95 @@ def propose_metric(
 
 # ── Step 3: Execute (deterministic, no LLM) ──────────────────────────────
 
-def execute_plan(the_plan: Plan, ds: DataSource) -> list[dict]:
+def _execute_joined_step(
+    step: PlanStep,
+    catalog_service: CatalogService,
+    registry,
+) -> dict:
+    """Resolve an APPROVED join policy server-side and run the step against
+    the joined view.
+
+    The planner only ever references a join_policy_name — the actual
+    left_table/right_table/keys are resolved here from the approved catalog,
+    never from the LLM. The metric/stats computation itself reuses the exact
+    same deterministic run_metric/run_stats_tool code path, just against a
+    DataSource built from the joined DataFrame.
+    """
+    join_name = step.join_policy_name
+    approved_joins = catalog_service.get_approved_joins()
+
+    if not join_name or join_name not in approved_joins:
+        return {
+            "step_id": step.step_id,
+            "action": step.action,
+            "target": step.target,
+            "filters": step.filters,
+            "args": step.args,
+            "result": None,
+            "error": f"Join policy '{join_name}' is not approved. Refusing to execute.",
+        }
+
+    join_policy = approved_joins[join_name]
+    joined_df = registry.get_joined_view(join_policy)
+
+    # Build a temporary DataSource from the joined view so the existing
+    # deterministic metric/stats execution runs unchanged against it.
+    joined_ds = DataSource(name=f"joined_{join_name}")
+    joined_ds.load_dataframe(joined_df, table_name="data")
+
+    result_entry: dict[str, Any] = {
+        "step_id": step.step_id,
+        "action": step.action,
+        "target": step.target,
+        "filters": step.filters,
+        "args": step.args,
+        "result": None,
+        "error": None,
+    }
+
+    try:
+        if step.action == "run_metric":
+            metrics = joined_ds.get_metrics()
+            metric = metrics[step.target]
+            result = run_metric(joined_ds, metric, step.filters)
+            result_entry["result"] = result
+        elif step.action == "run_stats":
+            result = run_stats_tool(joined_ds, step.target, step.args)
+            result_entry["result"] = result
+    except Exception as e:
+        result_entry["error"] = str(e)
+
+    return result_entry
+
+
+def execute_plan(
+    the_plan: Plan,
+    ds: DataSource,
+    registry=None,
+    catalog_service: CatalogService | None = None,
+) -> list[dict]:
     results: list[dict] = []
     metrics = ds.get_metrics()
 
     for step in the_plan.steps:
+        # Governed join: resolve server-side against the approved catalog.
+        if step.join_policy_name:
+            if catalog_service is None or registry is None:
+                results.append(
+                    {
+                        "step_id": step.step_id,
+                        "action": step.action,
+                        "target": step.target,
+                        "filters": step.filters,
+                        "args": step.args,
+                        "result": None,
+                        "error": "Join execution requires a registry and catalog service.",
+                    }
+                )
+                continue
+            results.append(_execute_joined_step(step, catalog_service, registry))
+            continue
+
         result_entry: dict[str, Any] = {
             "step_id": step.step_id,
             "action": step.action,

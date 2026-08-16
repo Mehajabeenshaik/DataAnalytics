@@ -11,13 +11,14 @@ widget) should use. It guarantees:
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from data_source import DataSource
 from metric_factory import generate_metrics
 
 from .approval import ApprovalService
-from .models import MetricDefinition, MetricProposal
+from .models import MetricDefinition, MetricProposal, JoinPolicy, JoinProposal
 from .store import CatalogStore
 
 
@@ -164,3 +165,61 @@ class CatalogService:
     def get_metric(self, name: str) -> MetricDefinition | None:
         """Return a single approved MetricDefinition by name, or None."""
         return self.store.load_approved().get(name)
+
+    # ── Join policies ─────────────────────────────────────────────────────
+
+    def get_approved_joins(self) -> dict[str, dict]:
+        """Return approved join policies in a planner-safe shape.
+
+        Only policies with status == "approved" are included. The planner
+        may reference a join_policy_name; the actual table/key details are
+        resolved server-side from this catalog — never from the LLM.
+        """
+        approved = self.store.load_approved_joins()
+        return {
+            name: {
+                "left_table": j.left_table,
+                "right_table": j.right_table,
+                "left_key": j.left_key,
+                "right_key": j.right_key,
+                "join_type": j.join_type,
+                "description": j.description,
+            }
+            for name, j in approved.items()
+            if j.status == "approved"
+        }
+
+    def propose_join(self, proposal: JoinProposal) -> str:
+        """Create a pending join proposal. Returns the proposal_id."""
+        proposal.status = "pending"
+        self.store.save_join_proposal(proposal)
+        return proposal.proposal_id
+
+    def approve_join(self, proposal_id: str, approved_by: str) -> JoinPolicy:
+        """Approve a pending join proposal, adding it to the approved catalog."""
+        prop = self.store.load_join_proposal(proposal_id)
+        if not prop or prop.status != "pending":
+            raise ValueError("Invalid or already reviewed join proposal")
+        joins = self.store.load_approved_joins()
+        j = prop.join
+        j.status = "approved"
+        j.approved_by = approved_by
+        j.approved_at = datetime.utcnow()
+        joins[j.name] = j
+        self.store.save_approved_joins(joins)
+        prop.status = "approved"
+        self.store.save_join_proposal(prop)
+        return j
+
+    def reject_join(self, proposal_id: str, rejected_by: str, reason: str) -> None:
+        """Reject a pending join proposal. It never enters the approved catalog."""
+        prop = self.store.load_join_proposal(proposal_id)
+        if not prop or prop.status != "pending":
+            raise ValueError("Invalid or already reviewed join proposal")
+        prop.status = "rejected"
+        prop.review_note = reason
+        self.store.save_join_proposal(prop)
+
+    def list_pending_joins(self) -> list[JoinProposal]:
+        """Return all join proposals awaiting human review."""
+        return self.store.list_pending_joins()
