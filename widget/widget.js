@@ -383,7 +383,101 @@
     if (data.caveats?.length) {
       data.caveats.forEach(c => { html += `<p style="font-size:11px;color:#fbbf24;margin-top:4px;">⚠ ${esc(c)}</p>`; });
     }
+    // Phase 8 — chart output. Render a lightweight inline SVG from the
+    // Vega-Lite spec's data.values (no heavy charting library).
+    const chartHtml = renderChartHtml(data.chart);
+    if (chartHtml) html += chartHtml;
     return html;
+  }
+
+  // ── Lightweight SVG chart renderer (Phase 8) ────────────────────────
+  // Renders a minimal bar/line/heatmap from a Vega-Lite spec's data.values.
+  // Keeps the widget bundle small — no Vega-Embed, no charting dependency.
+  function renderChartHtml(spec) {
+    if (!spec || typeof spec !== "object") return "";
+    const values = spec.data?.values;
+    if (!Array.isArray(values) || !values.length) return "";
+
+    const mark = spec.mark || "";
+    const note = spec._note ? `<p style="font-size:11px;color:#888;margin-top:4px;">${esc(spec._note)}</p>` : "";
+
+    if (mark === "bar") {
+      const max = Math.max(...values.map(v => Number(v.value) || 0), 1);
+      let html = `<div class="da-chart-wrap">`;
+      values.slice(0, 50).forEach(v => {
+        const pct = Math.round((Number(v.value) / max) * 100);
+        html += `<div class="da-chart-bar">
+          <span class="da-chart-bar-label" title="${esc(v.category)}">${esc(String(v.category).slice(0, 16))}</span>
+          <div class="da-chart-bar-fill" style="width:${pct}%"></div>
+          <span class="da-chart-bar-val">${fmtNum(v.value)}</span>
+        </div>`;
+      });
+      html += `</div>${note}`;
+      return html;
+    }
+
+    if (mark === "line") {
+      const nums = values.map(v => Number(v.value) || 0);
+      const max = Math.max(...nums, 1);
+      const min = Math.min(...nums, 0);
+      const range = max - min || 1;
+      const w = 300, h = 100, pad = 4;
+      const pts = values.map((v, i) => {
+        const x = pad + (i / Math.max(values.length - 1, 1)) * (w - 2 * pad);
+        const y = h - pad - ((Number(v.value) - min) / range) * (h - 2 * pad);
+        return `${x},${y}`;
+      });
+      let html = `<div class="da-line-chart">
+        <svg viewBox="0 0 ${w} ${h + 20}" preserveAspectRatio="none">
+          <polyline points="${pts.join(" ")}" fill="none" stroke="${THEME}" stroke-width="2" stroke-linejoin="round"/>
+          ${values.map((v, i) => {
+            const [x, y] = pts[i].split(",");
+            return `<circle cx="${x}" cy="${y}" r="3" fill="${THEME}"/>`;
+          }).join("")}
+          ${values.map((v, i) => {
+            const x = pad + (i / Math.max(values.length - 1, 1)) * (w - 2 * pad);
+            const label = v.date != null ? String(v.date) : "";
+            return i % Math.ceil(values.length / 5) === 0
+              ? `<text x="${x}" y="${h + 14}" fill="#666" font-size="9" text-anchor="middle">${esc(label.slice(0, 7))}</text>` : "";
+          }).join("")}
+        </svg>
+      </div>${note}`;
+      return html;
+    }
+
+    if (mark === "rect") {
+      // Simple heatmap: colored cells in a grid.
+      const rows = [...new Set(values.map(v => String(v.row)))];
+      const cols = [...new Set(values.map(v => String(v.col)))];
+      const nums = values.map(v => Number(v.value) || 0);
+      const max = Math.max(...nums, 1);
+      const min = Math.min(...nums, 0);
+      const range = max - min || 1;
+      const cell = 18, pad = 2;
+      const w = cols.length * (cell + pad) + 30;
+      const h = rows.length * (cell + pad) + 20;
+      let html = `<div class="da-line-chart">
+        <svg viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">
+          ${rows.map((r, ri) => {
+            return `<text x="2" y="${ri * (cell + pad) + cell / 2 + 4}" fill="#666" font-size="8">${esc(r.slice(0, 6))}</text>`;
+          }).join("")}
+          ${values.map(v => {
+            const ri = rows.indexOf(String(v.row));
+            const ci = cols.indexOf(String(v.col));
+            const t = (Number(v.value) - min) / range;
+            const r = Math.round(20 + t * 200);
+            const g = Math.round(20 + (1 - t) * 200);
+            const b = Math.round(20 + t * 200);
+            const x = 30 + ci * (cell + pad);
+            const y = ri * (cell + pad);
+            return `<rect x="${x}" y="${y}" width="${cell}" height="${cell}" fill="rgb(${r},${g},${b})" rx="2"/>`;
+          }).join("")}
+        </svg>
+      </div>${note}`;
+      return html;
+    }
+
+    return "";
   }
 
 

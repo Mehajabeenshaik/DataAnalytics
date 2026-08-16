@@ -35,6 +35,7 @@ from catalog.models import MetricDefinition as CatalogMetricDefinition
 from catalog.models import MetricProposal as CatalogMetricProposal
 
 from verification import verify_answer
+from chart_builder import build_chart_spec
 
 
 # ── PII defense-in-depth ──────────────────────────────────────────────────
@@ -1066,11 +1067,23 @@ def ask(
         confidence = answer["confidence"]
         answer.pop("_parse_failed", None)  # internal metadata, not for clients
 
+        # Phase 8 — chart output. Build a Vega-Lite spec from already-computed,
+        # already-verified results (no new computation, no LLM). Prefer the
+        # last/primary step. Skip cheaply for plan types that can't chart.
+        chart = None
+        if getattr(the_plan, "plan_type", None) not in ("no_match", "propose_metric"):
+            for r in reversed(results):  # prefer the last/primary step
+                chart = build_chart_spec(r)
+                if chart:
+                    break
+
         response = {
             **answer,
             "plan": the_plan.model_dump(),
             "results": results,
         }
+        if chart:
+            response["chart"] = chart
 
         # Cache the response for future repeated questions (scoped to tenant + dataset)
         set_cached_response(question, None, response, dataset_id=ds.dataset_id, tenant_id=tenant_id)

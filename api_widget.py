@@ -80,6 +80,7 @@ class AskResponse(BaseModel):
     confidence: str = "n/a"
     caveats: list[str] = []
     lineage: dict = {}
+    chart: dict | None = None
 
 
 class SessionInfoResponse(BaseModel):
@@ -409,6 +410,7 @@ async def ask_question(
             confidence=result.get("confidence", "n/a"),
             caveats=result.get("caveats", []),
             lineage=result.get("lineage", {}),
+            chart=result.get("chart"),
         )
     except ConnectionError as e:
         raise HTTPException(
@@ -480,6 +482,7 @@ async def ask_question_stream(
                             "confidence": event.get("confidence", "n/a"),
                             "caveats": event.get("caveats", []),
                             "lineage": event.get("lineage", {}),
+                            "chart": event.get("chart"),
                         },
                     })
         except ConnectionError as e:
