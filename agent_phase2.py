@@ -36,6 +36,7 @@ from catalog.models import MetricProposal as CatalogMetricProposal
 
 from verification import verify_answer
 from chart_builder import build_chart_spec
+from conversation_memory import get_memory
 
 
 # ── PII defense-in-depth ──────────────────────────────────────────────────
@@ -268,6 +269,7 @@ def plan(
     provider: LLMProvider,
     tenant_id: str = "default",
     dataset_names: list[str] | None = None,
+    prior_context: str = "",
 ) -> Plan:
     # Governed catalog: only APPROVED metrics are visible to the LLM planner.
     # Backward-compatible fallback: if the catalog hasn't been seeded yet,
@@ -300,12 +302,24 @@ def plan(
             f"Current dataset: '{ds.name}'\n\n"
         )
 
+    # Phase 10 — inject short prior-turn context as clearly-labeled context.
+    # This helps the planner resolve references like "that"/"it"/"by region",
+    # but NEVER grants access to anything outside the approved catalog above.
+    context_block = ""
+    if prior_context:
+        context_block = (
+            f"CONVERSATION CONTEXT (for resolving references like 'that' or 'it' —\n"
+            f"this does NOT grant access to anything outside the approved catalog above):\n"
+            f"{prior_context}\n\n"
+        )
+
     prompt = (
         f"Schema:\n{schema_card}\n\n"
         f"Allowed filter columns: {allowed_filters}\n\n"
         f"Available metrics:\n{json.dumps(catalog, indent=2)}\n\n"
         f"Available statistical tools:\n{json.dumps(tools_catalog, indent=2)}\n\n"
         f"{dataset_block}"
+        f"{context_block}"
         f"Question: {question}"
     )
 
@@ -798,6 +812,7 @@ def _resolve_question(
     provider: LLMProvider,
     tenant_id: str = "default",
     dataset_names: list[str] | None = None,
+    prior_context: str = "",
 ) -> tuple[Plan | None, dict | None]:
     """Run plan() + schema-fallback matching + propose-metric flow."""
     cached = get_cached_response(question, dataset_id=ds.dataset_id, tenant_id=tenant_id)
@@ -805,7 +820,11 @@ def _resolve_question(
         return None, cached
 
     try:
-        the_plan = plan(question, ds, provider, tenant_id=tenant_id, dataset_names=dataset_names)
+        the_plan = plan(
+            question, ds, provider,
+            tenant_id=tenant_id, dataset_names=dataset_names,
+            prior_context=prior_context,
+        )
     except Exception:
         the_plan = Plan(can_answer=False, reason="LLM provider offline", plan_type="no_match")
 
@@ -1000,6 +1019,7 @@ def ask(
     tenant_id: str = "default",
     user: str = "system",
     dataset_names: list[str] | None = None,
+    session_id: str | None = None,
 ) -> dict:
     """Phase 2 agent loop: plan -> execute -> synthesize.
 
@@ -1008,12 +1028,20 @@ def ask(
     tenant_id scopes the catalog, cache, quotas, observability, and audit so
     no cross-tenant leakage occurs. All resource limits (plan steps, row caps,
     timeouts) and quotas are enforced here.
+
+    session_id (Phase 10): when provided, prior-turn context is injected into
+    the planner prompt so follow-ups like "now break that down by region" can
+    resolve references — memory only affects what context the planner SEES,
+    never what it's allowed to select from the catalog allowlist.
     """
     import time as _time
     from observability import log_agent_run
     from audit_logger import log_action
     from resource_limits import max_plan_steps, apply_row_limit, run_with_timeout, ResourceLimitError
     from tenant_quotas import check_and_consume_query_quota, QuotaExceededError
+
+    memory = get_memory()
+    prior_context = memory.get_context(session_id) if session_id else ""
 
     t0 = _time.perf_counter()
     plan_type = "unknown"
@@ -1027,7 +1055,9 @@ def ask(
             check_and_consume_query_quota(tenant_id)
 
         the_plan, early_response = _resolve_question(
-            question, ds, provider, tenant_id=tenant_id, dataset_names=dataset_names
+            question, ds, provider,
+            tenant_id=tenant_id, dataset_names=dataset_names,
+            prior_context=prior_context,
         )
         plan_type = the_plan.plan_type if the_plan else "early"
         if early_response is not None:
@@ -1088,6 +1118,18 @@ def ask(
         # Cache the response for future repeated questions (scoped to tenant + dataset)
         set_cached_response(question, None, response, dataset_id=ds.dataset_id, tenant_id=tenant_id)
 
+        # Phase 10 — record the validated, executed turn (never raw LLM output).
+        if session_id and getattr(the_plan, "plan_type", None) not in ("no_match", "propose_metric"):
+            primary_step = next((s for s in the_plan.steps if s.action in ("run_metric", "run_stats")), None)
+            memory.record_turn(
+                session_id=session_id,
+                question=question,
+                plan_type=getattr(the_plan, "plan_type", "unknown"),
+                target=getattr(primary_step, "target", None),
+                filters=getattr(primary_step, "filters", None),
+                groupby=(primary_step.args or {}).get("group_col") if primary_step else None,
+            )
+
         return response
 
     except QuotaExceededError as e:
@@ -1141,6 +1183,7 @@ def ask_stream(
     tenant_id: str = "default",
     user: str = "system",
     dataset_names: list[str] | None = None,
+    session_id: str | None = None,
 ):
     """Streaming Phase 2 agent loop: plan -> execute -> synthesize (streamed).
 
@@ -1166,6 +1209,9 @@ def ask_stream(
     from resource_limits import max_plan_steps, apply_row_limit, run_with_timeout, ResourceLimitError
     from tenant_quotas import check_and_consume_query_quota, QuotaExceededError
 
+    memory = get_memory()
+    prior_context = memory.get_context(session_id) if session_id else ""
+
     t0 = _time.perf_counter()
     plan_type = "unknown"
     confidence = "n/a"
@@ -1178,7 +1224,9 @@ def ask_stream(
             check_and_consume_query_quota(tenant_id)
 
         the_plan, early_response = _resolve_question(
-            question, ds, provider, tenant_id=tenant_id, dataset_names=dataset_names
+            question, ds, provider,
+            tenant_id=tenant_id, dataset_names=dataset_names,
+            prior_context=prior_context,
         )
         plan_type = the_plan.plan_type if the_plan else "early"
         if early_response is not None:
@@ -1235,6 +1283,18 @@ def ask_stream(
 
         # Cache the response for future repeated questions (scoped to tenant + dataset)
         set_cached_response(question, None, response, dataset_id=ds.dataset_id, tenant_id=tenant_id)
+
+        # Phase 10 — record the validated, executed turn (never raw LLM output).
+        if session_id and getattr(the_plan, "plan_type", None) not in ("no_match", "propose_metric"):
+            primary_step = next((s for s in the_plan.steps if s.action in ("run_metric", "run_stats")), None)
+            memory.record_turn(
+                session_id=session_id,
+                question=question,
+                plan_type=getattr(the_plan, "plan_type", "unknown"),
+                target=getattr(primary_step, "target", None),
+                filters=getattr(primary_step, "filters", None),
+                groupby=(primary_step.args or {}).get("group_col") if primary_step else None,
+            )
 
         yield response
 

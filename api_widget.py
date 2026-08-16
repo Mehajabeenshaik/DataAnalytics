@@ -425,6 +425,7 @@ async def ask_question(
             provider,
             tenant_id=tenant.api_key,
             dataset_names=registry.list_names(),
+            session_id=req.session_id,
         )
 
         # Serialize any pandas objects in results
@@ -492,6 +493,7 @@ async def ask_question_stream(
                 provider,
                 tenant_id=tenant.api_key,
                 dataset_names=registry.list_names(),
+                session_id=req.session_id,
             ):
 
                 if isinstance(event, str):
