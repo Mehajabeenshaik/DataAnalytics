@@ -59,11 +59,11 @@ ALLOWED_STATS_TOOLS: list[dict] = [
     },
     {
         "name": "group_compare",
-        "description": "Sum or mean of a numeric column grouped by a categorical column.",
+        "description": "Sum, mean, max, or min of a numeric column grouped by a categorical column.",
         "args": {
             "value_col": "numeric column name",
             "group_col": "categorical column name",
-            "agg": '"sum" or "mean"',
+            "agg": '"sum", "mean", "max", or "min"',
         },
     },
     {
@@ -241,10 +241,15 @@ def group_compare(
         raise ValueError(f"'{value_col}' is not numeric. group_compare requires a numeric value column.")
 
     agg_lower = agg.lower()
-    if agg_lower not in ("sum", "mean"):
-        raise ValueError(f"agg must be 'sum' or 'mean', got '{agg}'")
+    if agg_lower not in ("sum", "mean", "max", "min"):
+        raise ValueError(f"agg must be 'sum', 'mean', 'max', or 'min', got '{agg}'")
 
-    sql_agg = "SUM" if agg_lower == "sum" else "AVG"
+    sql_agg = {
+        "sum": "SUM",
+        "mean": "AVG",
+        "max": "MAX",
+        "min": "MIN",
+    }[agg_lower]
     df = ds.query(
         f"""
         SELECT "{group_col}" AS key, {sql_agg}("{value_col}") AS value

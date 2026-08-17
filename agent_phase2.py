@@ -128,7 +128,7 @@ Output STRICT JSON only:
   "synonyms": ["...", "..."],
   "description": "One clear sentence describing what this metric measures",
   "column": "<existing column name>",
-  "agg": "sum" | "mean" | "count" | "nunique",
+  "agg": "sum" | "mean" | "count" | "nunique" | "max" | "min",
   "groupby": "<column or null>",
   "base_filters": {},
   "why_needed": "Short reason this metric is required",
@@ -137,7 +137,7 @@ Output STRICT JSON only:
 
 Rules:
 - column and groupby must already exist in the schema.
-- agg must be one of: sum, mean, count, nunique.
+- agg must be one of: sum, mean, count, nunique, max, min.
 - Never invent columns or complex expressions.
 - If you cannot propose a safe metric, return:
   {"can_propose": false, "reason": "..."}
@@ -407,7 +407,7 @@ def propose_metric(
                 can_propose=False,
                 reason=f"Proposed column '{proposal.column}' does not exist",
             )
-        if proposal.agg not in ("sum", "mean", "count", "nunique"):
+        if proposal.agg not in ("sum", "mean", "count", "nunique", "max", "min"):
             return MetricProposal(
                 can_propose=False,
                 reason=f"Invalid agg '{proposal.agg}'",
