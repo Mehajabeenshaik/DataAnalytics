@@ -1,4 +1,4 @@
-# DataAnalytics
+# DaAna
 
 **Governed AI for business data — without letting the model touch your database.**
 
