@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
 
-from auth import get_current_user, UserOut, require_admin
+from .auth import get_current_user, UserOut, require_admin
 from tenant.service import TenantService
 from tenant_quotas import get_usage
 from audit_logger import export_audit

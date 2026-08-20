@@ -1,4 +1,4 @@
-﻿"""
+"""
 TTL-based response cache for the governed agent.
 
 Caches (question, filters) -> response pairs so that repeated questions

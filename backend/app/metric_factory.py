@@ -8,6 +8,34 @@ from __future__ import annotations
 from data_source import DataSource, TableProfile
 
 
+def _build_synonyms(column: str, agg: str) -> list[str]:
+    col_l = column.lower().replace("_", " ")
+    synonyms = []
+
+    if agg == "sum":
+        synonyms += [
+            f"total {col_l}", f"{col_l} total", f"sum of {col_l}",
+            f"how much {col_l}", f"overall {col_l}",
+        ]
+        if any(kw in col_l for kw in ("revenue", "sales", "income", "amount")):
+            synonyms += ["revenue", "total revenue", "total sales", "sales total"]
+
+    elif agg == "mean":
+        synonyms += [
+            f"average {col_l}", f"avg {col_l}", f"mean {col_l}",
+            f"typical {col_l}",
+        ]
+
+    elif agg in ("max", "min"):
+        word = "highest" if agg == "max" else "lowest"
+        synonyms += [f"{word} {col_l}", f"maximum {col_l}" if agg == "max" else f"minimum {col_l}"]
+
+    elif agg == "count":
+        synonyms += [f"number of {col_l}", f"{col_l} count", f"count of {col_l}"]
+
+    return synonyms
+
+
 def _suggest_synonyms(col: str, kind: str) -> list[str]:
     base = col.replace("_", " ")
     if kind == "sum":
@@ -44,7 +72,7 @@ def generate_metrics(ds: DataSource) -> dict:
         col_clean = col.name.replace(" ", "_")
         name_sum = f"total_{col_clean}"
         metrics[name_sum] = {
-            "synonyms": _suggest_synonyms(col.name, "sum"),
+            "synonyms": _build_synonyms(col.name, "sum"),
             "description": f"Sum of {col.name} across all rows.",
             "column": col.name,
             "agg": "sum",
@@ -54,7 +82,7 @@ def generate_metrics(ds: DataSource) -> dict:
 
         name_avg = f"avg_{col_clean}"
         metrics[name_avg] = {
-            "synonyms": _suggest_synonyms(col.name, "avg"),
+            "synonyms": _build_synonyms(col.name, "mean"),
             "description": f"Average (mean) of {col.name}.",
             "column": col.name,
             "agg": "mean",
@@ -64,7 +92,7 @@ def generate_metrics(ds: DataSource) -> dict:
 
         name_max = f"max_{col_clean}"
         metrics[name_max] = {
-            "synonyms": [f"maximum {col.name}", f"highest {col.name}", f"max {col.name}"],
+            "synonyms": _build_synonyms(col.name, "max"),
             "description": f"Maximum value of {col.name}.",
             "column": col.name,
             "agg": "max",
@@ -74,7 +102,7 @@ def generate_metrics(ds: DataSource) -> dict:
 
         name_min = f"min_{col_clean}"
         metrics[name_min] = {
-            "synonyms": [f"minimum {col.name}", f"lowest {col.name}", f"min {col.name}"],
+            "synonyms": _build_synonyms(col.name, "min"),
             "description": f"Minimum value of {col.name}.",
             "column": col.name,
             "agg": "min",
@@ -84,7 +112,10 @@ def generate_metrics(ds: DataSource) -> dict:
 
     # 2. Row count
     metrics["row_count"] = {
-        "synonyms": ["number of rows", "how many records", "count", "volume", "total orders", "total items"],
+        "synonyms": [
+            "how many rows", "row count", "number of rows",
+            "how many records", "dataset size", "total rows",
+        ],
         "description": "Total number of rows in the table.",
         "column": "*",
         "agg": "count",

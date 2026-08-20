@@ -19,11 +19,11 @@ RUN python -m spacy download en_core_web_sm
 COPY . .
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8001
 
 # Environment defaults
 ENV PYTHONUNBUFFERED=1
-ENV PORT=8000
+ENV PORT=8001
 
 # Run uvicorn server
-CMD ["python", "-m", "uvicorn", "auth:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["python", "-m", "uvicorn", "backend.app.main:app", "--host", "0.0.0.0", "--port", "8001"]

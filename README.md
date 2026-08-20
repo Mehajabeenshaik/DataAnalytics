@@ -95,7 +95,11 @@ ollama pull nemotron-3-nano:4b
 cp .env.example .env
 # Set JWT_SECRET_KEY to a long random secret
 
-python demo.py
+# Run the API server (backend)
+uvicorn backend.app.main:app --reload --port 8001
+
+# Or run the CLI demo
+python backend/app/demo.py
 ```
 
 Example:
@@ -186,13 +190,15 @@ This is the difference between a weekend agent demo and software you can put in 
 
 | Path | Role |
 |------|------|
-| `agent_phase2.py` | Plan → execute → synthesize agent |
-| `catalog/` | Versioned metric catalog + approval |
-| `stats_tools.py` | Deterministic statistical tools |
-| `data_source.py` | CSV / live DB load, profiling, PII |
-| `tenant/` | Org/tenant identity + isolation |
-| `sso/` + `auth_sso_routes.py` | Local SSO; OIDC hooks in `auth.py` |
-| `api_widget.py` + `widget/` | Embeddable chat bot |
+| `backend/app/main.py` | FastAPI entry point (`uvicorn backend.app.main:app`) |
+| `backend/app/agent_phase2.py` | Plan → execute → synthesize agent |
+| `backend/app/catalog/` | Versioned metric catalog + approval |
+| `backend/app/stats_tools.py` | Deterministic statistical tools |
+| `backend/app/data_source.py` | CSV / live DB load, profiling, PII |
+| `backend/app/tenant/` | Org/tenant identity + isolation |
+| `backend/app/sso/` + `backend/app/auth_sso_routes.py` | Local SSO; OIDC hooks in `auth.py` |
+| `backend/app/api_widget.py` + `frontend/embed/` | Embeddable chat bot |
+| `backend/tests/` | Test suite |
 | `eval/` | Trust eval, golden sets, adversarial cases |
 | `docs/` | Security, threat model, pilot, trust report |
 

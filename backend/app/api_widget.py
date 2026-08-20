@@ -39,8 +39,9 @@ _session_mgr = SessionManager()
 # Maps session_id -> {"registry": DatasetRegistry, "tenant_key": str, "filename": str}
 _widget_sessions: dict[str, dict] = {}
 
-# Path to the widget JS file
-_WIDGET_DIR = Path(__file__).resolve().parent / "widget"
+# Path to the widget JS file (moved to frontend/embed during restructure)
+# backend/app/api_widget.py → parents[0]=app, parents[1]=backend, parents[2]=repo root
+_WIDGET_DIR = Path(__file__).resolve().parents[2] / "frontend" / "embed"
 
 
 # ── Auth dependency ───────────────────────────────────────────────────────

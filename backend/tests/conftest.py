@@ -11,6 +11,8 @@ Tests run with a deterministic test-only key that is NOT the production
 sentinel value, so the security check passes without weakening it.
 """
 import os
+import sys
+from pathlib import Path
 
 # Must be set before any project module (config.py) is imported.
 # Use setdefault so an externally-provided key (CI/CD secret) is respected.
@@ -21,3 +23,9 @@ os.environ.setdefault(
 # Provide a test API key so NvidiaProvider() constructs without error in
 # tests that call get_provider("nvidia") or build NvidiaProvider() directly.
 os.environ.setdefault("NVIDIA_API_KEY", "test-key")
+
+# Add backend/app to sys.path so tests can import flat modules
+# (config, auth, agent_phase2, ...) and packages (catalog, tenant, sso).
+_APP_DIR = Path(__file__).resolve().parents[1] / "app"
+if str(_APP_DIR) not in sys.path:
+    sys.path.insert(0, str(_APP_DIR))

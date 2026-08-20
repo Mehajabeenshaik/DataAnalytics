@@ -32,11 +32,11 @@ app.add_middleware(
 )
 
 # ── Mount widget API router ───────────────────────────────────────────────
-from api_widget import widget_router  # noqa: E402
+from .api_widget import widget_router  # noqa: E402
 app.include_router(widget_router)
 
 # ── Mount SSO router ──────────────────────────────────────────────────────
-from auth_sso_routes import sso_router  # noqa: E402
+from .auth_sso_routes import sso_router  # noqa: E402
 app.include_router(sso_router)
 
 
@@ -333,5 +333,5 @@ async def get_pii_vault(customer_id: int):
 
 
 # ── Late import avoids circular import: admin_api imports get_current_user from auth ──
-from admin_api import admin_router  # noqa: E402
+from .admin_api import admin_router  # noqa: E402
 app.include_router(admin_router)

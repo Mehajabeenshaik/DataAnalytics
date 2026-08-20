@@ -14,7 +14,7 @@ def _issue_token(email: str, tenant_id: str | None, roles: list[str]) -> str:
         "roles": roles,
     }
     try:
-        from auth import create_access_token
+        from .auth import create_access_token
         return create_access_token(token_data)
     except Exception:
         from jose import jwt

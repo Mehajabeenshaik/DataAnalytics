@@ -11,8 +11,8 @@ import sys
 from dotenv import load_dotenv
 load_dotenv()
 
-# Add project root to path
-sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Add backend/app to path (modules moved during frontend/backend restructure)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backend", "app"))
 
 # Import the eval function directly
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

@@ -6,7 +6,8 @@ from dotenv import load_dotenv
 # take precedence — load_dotenv() does NOT override existing env vars.
 load_dotenv()
 
-BASE_DIR = Path(__file__).resolve().parent
+# Repo root (backend/app/config.py → ../../..)
+BASE_DIR = Path(__file__).resolve().parents[2]
 DB_PATH = os.getenv("DB_PATH", str(BASE_DIR / "ecommerce.db"))
 
 PII_VAULT_PATH = os.getenv("PII_VAULT_PATH", str(BASE_DIR / "pii_vault.db"))

@@ -27,10 +27,11 @@ import sys
 import time
 from pathlib import Path
 
-# Ensure project root is on sys.path so imports work from any CWD.
+# Ensure backend/app is on sys.path so imports work from any CWD.
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+_APP_DIR = ROOT / "backend" / "app"
+if str(_APP_DIR) not in sys.path:
+    sys.path.insert(0, str(_APP_DIR))
 
 from data_source import DataSource
 from agent_phase2 import ask

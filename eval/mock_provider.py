@@ -259,8 +259,11 @@ class MockTrustProvider(LLMProvider):
                 }],
             })
 
-        # 6. Order count
-        if "how many orders" in q or "count of orders" in q or "number of orders" in q:
+        # 6. Row count / order count
+        if any(x in q for x in (
+            "how many orders", "count of orders", "number of orders",
+            "how many rows", "row count", "number of records", "dataset size",
+        )):
             target = "row_count" if "row_count" in catalog_names else pick_target("")
             return json.dumps({
                 "can_answer": True,
@@ -303,6 +306,15 @@ class MockTrustProvider(LLMProvider):
                     "filters": {},
                     "args": {},
                 }],
+            })
+
+        # 8.5 Nonexistent column reference (e.g. "product" not in schema)
+        if "product" in q or "customer name" in q:
+            return json.dumps({
+                "can_answer": False,
+                "reason": "No 'product' column exists. Available categorical columns: category, region, status.",
+                "plan_type": "no_match",
+                "steps": [],
             })
 
         # 9. PII-extraction attempts: emails/phones/names/addresses
