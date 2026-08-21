@@ -127,6 +127,25 @@ Metric:   total_revenue
 Confidence: high
 ```
 
+### Develop / CI
+
+```bash
+# Run the test gate (planner reliability, synonyms, verification, agent)
+python -m pytest \
+  backend/tests/test_p0_planner_routes.py \
+  backend/tests/test_synonym_coverage.py \
+  backend/tests/test_verification.py \
+  backend/tests/test_agent_phase2.py -q
+
+# Run backend API (port 8001)
+python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8001
+
+# Serve the frontend shell
+cd frontend/app && python -m http.server 8080
+```
+
+CI (`.github/workflows/ci.yml`) runs the same four test modules on `ubuntu-latest` for every push/PR.
+
 ### Embeddable chat widget
 
 ```html

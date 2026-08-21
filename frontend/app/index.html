@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+ <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -17,6 +17,14 @@
     .meta { color: #8d8; font-size: 12px; margin-top: 8px; }
     .err { color: #f88; }
     .ok { color: #8d8; }
+    .answer { font-size: 16px; line-height: 1.5; }
+    .caveat { color: #f5a623; font-size: 13px; }
+    .confidence { font-weight: 600; }
+    .confidence.high { color: #34d399; }
+    .confidence.low { color: #f5a623; }
+    .confidence.medium { color: #60a5fa; }
+    fieldset { border: 1px solid #2a2a3a; border-radius: 8px; margin-top: 8px; }
+    fieldset legend { color: #9aa; font-size: 12px; padding: 0 6px; }
   </style>
 </head>
 <body>
@@ -34,8 +42,9 @@
   </div>
 
   <div class="card">
-    <input id="question" type="text" placeholder="What is total sales?" />
-    <p style="margin-top:12px"><button id="askBtn">Ask</button></p>
+    <label>Session <span id="sessionId" class="meta">— none —</span></label>
+    <input id="question" type="text" placeholder="What is total sales?" disabled />
+    <p style="margin-top:12px"><button id="askBtn" disabled>Ask</button></p>
   </div>
 
   <div class="card">
@@ -45,12 +54,19 @@
 <script>
 const $ = (id) => document.getElementById(id);
 let sessionId = null;
+let uploaded = false;
+let uploadedFilename = null;
 
 function headers() {
   return { "X-API-Key": $("apiKey").value.trim() };
 }
 function base() {
   return $("apiBase").value.replace(/\/$/, "");
+}
+
+function setUploadState(ok, msg) {
+  $("uploadStatus").textContent = msg;
+  $("uploadStatus").className = "meta " + (ok ? "ok" : "err");
 }
 
 async function ensureSession() {
@@ -60,12 +76,50 @@ async function ensureSession() {
   const j = await r.json();
   sessionId = j.session_id || j.sessionId;
   if (!sessionId) throw new Error("no session_id in response: " + JSON.stringify(j));
+  $("sessionId").textContent = sessionId.slice(0, 8) + "…";
+  $("sessionId").className = "meta ok";
+  $("question").disabled = false;
   return sessionId;
 }
 
+function isUtf8Error(text) {
+  return /utf-?8|encoding|codec|decode|ascii|unicode/i.test(text || "");
+}
+
+function renderAnswer(j) {
+  const answer = j.answer || j.message || "";
+  const conf = (j.confidence || "").toString().toLowerCase();
+  const caveats = j.caveats || [];
+  const lineage = j.lineage || {};
+  const tools = lineage.metrics_or_tools_used || [];
+
+  let html = '<div class="answer">' + escapeHtml(answer) + "</div>";
+
+  if (conf) {
+    html += '<p style="margin-top:12px"><span class="confidence ' + conf + '">confidence: ' + escapeHtml(conf) + "</span></p>";
+  }
+
+  if (tools.length) {
+    html += '<p style="margin-top:8px" class="meta">metrics/tools used: ' + escapeHtml(tools.join(", ")) + "</p>";
+  }
+
+  if (caveats.length) {
+    const items = caveats.map(c => '<li class="caveat">' + escapeHtml(c) + "</li>").join("");
+    html += '<p style="margin-top:8px" class="caveat">Caveats:</p><ul style="margin-left:18px">' + items + "</ul>";
+  }
+
+  $("log").innerHTML = html;
+}
+
+function escapeHtml(s) {
+  var el = document.createElement("div");
+  el.appendChild(document.createTextNode(String(s)));
+  return el.innerHTML;
+}
+
 $("uploadBtn").onclick = async () => {
-  $("uploadStatus").textContent = "Uploading…";
-  $("uploadStatus").className = "meta";
+  $("uploadBtn").disabled = true;
+  setUploadState(true, "Uploading…");
   try {
     await ensureSession();
     const f = $("file").files[0];
@@ -75,41 +129,54 @@ $("uploadBtn").onclick = async () => {
     fd.append("session_id", sessionId);
     const r = await fetch(base() + "/api/v1/upload", { method: "POST", headers: headers(), body: fd });
     const text = await r.text();
-    if (!r.ok) throw new Error(text || ("upload " + r.status));
-    $("uploadStatus").textContent = "Upload OK";
+    if (!r.ok) {
+      if (isUtf8Error(text)) {
+        throw new Error("This file is not UTF-8. Re-save as CSV UTF-8 in Excel and try again.");
+      }
+      throw new Error("Upload failed (" + r.status + "): " + (text || "unknown error"));
+    }
+    uploaded = true;
+    uploadedFilename = f.name;
+    $("uploadStatus").textContent = "Upload OK — " + f.name;
     $("uploadStatus").className = "meta ok";
-    $("log").textContent = text;
+    $("log").textContent = "File uploaded. Ask a question below.";
+    $("askBtn").disabled = false;
   } catch (e) {
-    $("uploadStatus").textContent = String(e.message || e);
-    $("uploadStatus").className = "meta err";
+    setUploadState(false, String(e.message || e));
+  } finally {
+    $("uploadBtn").disabled = false;
   }
 };
 
 $("askBtn").onclick = async () => {
   const q = $("question").value.trim();
   if (!q) return;
+  if (!uploaded) {
+    $("log").innerHTML = '<p class="err">Upload a file first.</p>';
+    return;
+  }
+  $("askBtn").disabled = true;
   $("log").textContent = "Thinking…";
   try {
-    await ensureSession();
     const r = await fetch(base() + "/api/v1/ask", {
       method: "POST",
       headers: { ...headers(), "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: sessionId, question: q }),
     });
     const text = await r.text();
-    if (!r.ok) throw new Error(text || ("ask " + r.status));
-    let j; try { j = JSON.parse(text); } catch { j = { answer: text }; }
-    const answer = j.answer || j.message || text;
-    const conf = j.confidence || (j.result && j.result.confidence) || "";
-    const caveats = j.caveats || [];
-    const lineage = j.lineage || {};
-    $("log").textContent =
-      answer +
-      (conf ? `\n\nconfidence: ${conf}` : "") +
-      (caveats.length ? `\ncaveats: ${caveats.join("; ")}` : "") +
-      (Object.keys(lineage).length ? `\nlineage: ${JSON.stringify(lineage)}` : "");
+    if (!r.ok) {
+      throw new Error("Ask failed (" + r.status + "): " + (text || "unknown error"));
+    }
+    let j;
+    try { j = JSON.parse(text); } catch { j = { answer: text, confidence: "" }; }
+    if (!j.answer) {
+      j.answer = j.message || j.text || text;
+    }
+    renderAnswer(j);
   } catch (e) {
-    $("log").textContent = "Error: " + (e.message || e);
+    $("log").innerHTML = '<p class="err">Error: ' + escapeHtml(e.message || e) + "</p>";
+  } finally {
+    $("askBtn").disabled = false;
   }
 };
 </script>

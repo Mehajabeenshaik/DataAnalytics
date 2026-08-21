@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      JWT_SECRET_KEY: test-secret-key-not-for-prod-32chars-min
+      LLM_PROVIDER: mock
+      NVIDIA_API_KEY: test-key
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install pip dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pytest-asyncio
+
+      - name: Download SpaCy English model
+        # Required by presidio-analyzer (pii_masker.py) which loads a spaCy
+        # NLP engine at import time inside DataSource._detect_and_mask_pii.
+        run: |
+          python -m spacy download en_core_web_sm || true
+
+      - name: Run P0 planner + verification tests
+        run: |
+          python -m pytest \
+            backend/tests/test_p0_planner_routes.py \
+            backend/tests/test_synonym_coverage.py \
+            backend/tests/test_verification.py \
+            backend/tests/test_agent_phase2.py \
+            -q --tb=line
