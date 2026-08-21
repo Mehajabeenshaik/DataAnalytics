@@ -8,22 +8,33 @@ from __future__ import annotations
 from data_source import DataSource, TableProfile
 
 
+def _is_id_like(name: str) -> bool:
+    """Return True for id-like column names that should NOT get sum/avg metrics."""
+    n = name.lower().strip()
+    return n == "id" or n.endswith("_id") or n in {"index", "row_id", "pk"}
+
+
 def _build_synonyms(column: str, agg: str) -> list[str]:
     col_l = column.lower().replace("_", " ")
+    col_clean = column.replace(" ", "_")
     synonyms = []
 
     if agg == "sum":
         synonyms += [
             f"total {col_l}", f"{col_l} total", f"sum of {col_l}",
             f"how much {col_l}", f"overall {col_l}",
+            f"sum {col_l}", f"total_{col_clean}",
         ]
         if any(kw in col_l for kw in ("revenue", "sales", "income", "amount")):
-            synonyms += ["revenue", "total revenue", "total sales", "sales total"]
+            synonyms += [
+                "revenue", "total revenue", "total sales", "sales total",
+                "overall revenue", "overall sales", "sum of sales",
+            ]
 
     elif agg == "mean":
         synonyms += [
             f"average {col_l}", f"avg {col_l}", f"mean {col_l}",
-            f"typical {col_l}",
+            f"typical {col_l}", f"{col_l} average",
         ]
 
     elif agg in ("max", "min"):
@@ -33,17 +44,27 @@ def _build_synonyms(column: str, agg: str) -> list[str]:
     elif agg == "count":
         synonyms += [f"number of {col_l}", f"{col_l} count", f"count of {col_l}"]
 
-    return synonyms
+    return list(dict.fromkeys(synonyms))
 
 
 def _suggest_synonyms(col: str, kind: str) -> list[str]:
     base = col.replace("_", " ")
+    col_clean = col.replace(" ", "_")
     if kind == "sum":
-        return [base, f"total {base}", f"sum of {base}", f"{base} total", "sales"]
+        syns = [
+            base, f"total {base}", f"sum of {base}", f"{base} total",
+            f"sum {base}", f"total_{col_clean}",
+        ]
+        if base in ("sales", "sale", "amount", "revenue"):
+            syns += [
+                "total revenue", "revenue", "total sales", "sales total",
+                "overall revenue", "overall sales", "sum of sales",
+            ]
+        return list(dict.fromkeys(syns))
     if kind == "count":
         return [f"number of {base}", f"count of {base}", f"how many {base}"]
     if kind == "avg":
-        return [f"average {base}", f"avg {base}", f"mean {base}"]
+        return [f"average {base}", f"avg {base}", f"mean {base}", f"{base} average"]
     if kind == "by":
         return [f"{base} by", f"breakdown by {base}", f"{base} split"]
     return [base]
@@ -68,7 +89,11 @@ def generate_metrics(ds: DataSource) -> dict:
     id_like = [c for c in profile.columns if "id" in c.name.lower()]
 
     # 1. Global statistics for every numeric column (sum, mean, min, max)
+    # Skip id-like columns — summing an order_id is meaningless and pollutes
+    # the catalog with bogus "total_order_id" metrics that confuse the planner.
     for col in numeric_cols:
+        if _is_id_like(col.name):
+            continue
         col_clean = col.name.replace(" ", "_")
         name_sum = f"total_{col_clean}"
         metrics[name_sum] = {

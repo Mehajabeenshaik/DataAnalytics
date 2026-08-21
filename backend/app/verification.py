@@ -24,6 +24,34 @@ from __future__ import annotations
 from typing import Any
 
 
+def verify_breakdown_sums_to_total(
+    breakdown: dict[str, Any] | None,
+    total: float | None,
+    rel_tol: float = 1e-4,
+    abs_tol: float = 0.01,
+) -> tuple[bool, str | None]:
+    """Check that a breakdown dict's numeric values sum to the expected total.
+
+    Returns (ok, message). Non-numeric breakdown values cause the check to
+    be skipped (returns True, None) — we only verify when all values are
+    numeric.
+    """
+    if not breakdown or total is None:
+        return True, None
+    try:
+        s = 0.0
+        for v in breakdown.values():
+            if isinstance(v, (int, float)):
+                s += float(v)
+            else:
+                return True, None  # non-numeric breakdown; skip
+        if abs(s - float(total)) <= max(abs_tol, rel_tol * abs(float(total))):
+            return True, None
+        return False, f"Verification failed: breakdown does not sum to total (sum {s} != total {total})"
+    except Exception:
+        return True, None
+
+
 def verify_answer(plan: Any, results: list[dict], synthesized: dict) -> dict:
     flags: list[str] = []
 
@@ -50,8 +78,8 @@ def verify_answer(plan: Any, results: list[dict], synthesized: dict) -> dict:
         breakdown = r.get("_breakdown")
         total = r.get("_expected_total")
         if breakdown and total:
-            s = sum(v for v in breakdown.values() if isinstance(v, (int, float)))
-            if total != 0 and abs(s - total) / abs(total) > 0.01:
+            ok, msg = verify_breakdown_sums_to_total(breakdown, total)
+            if not ok:
                 flags.append(f"breakdown_total_mismatch:{target}")
 
         # Truncated results can never be "high confidence"

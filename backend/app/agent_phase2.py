@@ -19,6 +19,7 @@ Safety model is fully preserved:
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 import pandas as pd
@@ -107,7 +108,7 @@ Produce a plan in STRICT JSON only:
 Rules:
 - Maximum 3 steps.
 - Only use metric names that appear in the catalog.
-- Only use tool names from the allowed tools list: describe, value_counts, correlation, group_compare, missingness, trend.
+- Only use tool names from the allowed tools list: describe, value_counts, correlation, group_compare, missingness, trend, anomaly_detect.
 - For questions comparing totals/means across categories (e.g. "highest sales by region", "sales per region"), use plan_type="stats_tool", action="run_stats", target="group_compare", args={"value_col": "<numeric_col>", "group_col": "<cat_col>", "agg": "sum"}.
 - For questions that need data from two tables joined together, use plan_type="joined_metric" and set join_policy_name to one of the approved join policy names listed in context. Never invent a join_policy_name — only use the approved ones provided.
 - Filters may only use columns from the allowed filter list.
@@ -277,7 +278,13 @@ def plan(
     # (and tests) that don't seed the catalog keep working unchanged.
     catalog_service = CatalogService(tenant_id=tenant_id)
     approved = catalog_service.get_approved_metrics()
-    metrics = approved if approved else ds.get_metrics()
+    auto = ds.get_metrics()
+    # Merge approved + auto-generated metrics. Approved entries are the
+    # governed base, but auto-generated metrics from the CURRENT data schema
+    # must also be visible — a stale catalog (e.g. seeded before id-like
+    # columns were excluded) must not hide freshly-generated metrics like
+    # total_revenue for a newly-loaded dataset.
+    metrics = {**(approved or {}), **(auto or {})}
     catalog = get_metric_catalog_for_llm(metrics)
     schema_card = ds.get_schema_card()
     allowed_filters = ds.allowed_filter_columns
@@ -804,6 +811,151 @@ def synthesize_stream(
 
 
 
+# ── Deterministic planner fallbacks ──────────────────────────────────────
+
+_ID_LIKE = re.compile(r"(^id$|_id$)", re.I)
+_MONEY = {"sales", "revenue", "amount", "price", "income"}
+
+
+def _pick_sum_metric(metrics: dict, question: str) -> str | None:
+    """Pick the best sum metric for a total/sum question.
+
+    Prefers real money columns (sales, revenue, amount, price, income) over
+    any other summable column. Never picks id-like columns (total_order_id).
+    Returns None when no suitable candidate exists.
+    """
+    q = question.lower()
+    want_money = bool(re.search(r"\b(revenue|sales|amount|price)\b", q))
+    candidates: list[tuple[int, str]] = []
+    for name, info in (metrics or {}).items():
+        if info.get("agg") != "sum":
+            continue
+        col = (info.get("column") or "")
+        if _ID_LIKE.search(col.strip()):
+            continue
+        col_l = col.lower()
+        syn = " ".join(info.get("synonyms") or []).lower()
+        score = 0
+        if col_l in _MONEY:
+            score += 10
+        if any(m in syn for m in _MONEY):
+            score += 5
+        if want_money and score == 0:
+            continue
+        candidates.append((score, name))
+    if not candidates:
+        return None
+    candidates.sort(reverse=True)
+    return candidates[0][1]
+
+
+def _forced_breakdown(question: str, ds: DataSource) -> "Plan | None":
+    """Deterministic group_compare plan for breakdown-style questions."""
+    q = question.lower()
+    bys = re.findall(r"\bby\s+(\w+)\b", q)
+    if not bys and not re.search(r"\b(break\s*down|breakdown|group(?:ed)?\s*by)\b", q):
+        return None
+    dim = (bys[-1] if bys else None)
+    if not dim or not ds.profile:
+        return None
+    cat = {c.name.lower(): c.name for c in ds.profile.columns if c.is_categorical}
+    # simple stemming: regions -> region
+    key = dim if dim in cat else dim.rstrip("s")
+    if key not in cat:
+        return None
+    group_col = cat[key]
+    nums = [c.name for c in ds.profile.columns if c.is_numeric and not _ID_LIKE.search(c.name)]
+    if not nums:
+        return None
+    value_col = next((n for n in nums if n.lower() in _MONEY), nums[0])
+    return Plan(
+        can_answer=True,
+        reason="deterministic: group_compare",
+        plan_type="stats_tool",
+        steps=[PlanStep(
+            step_id=1,
+            action="run_stats",
+            target="group_compare",  # must exist in stats_tools
+            filters={},
+            args={"group_col": group_col, "value_col": value_col, "agg": "sum"},
+        )],
+    )
+
+
+def _forced_plan_from_question(question: str, ds: DataSource) -> "Plan | None":
+    """Deterministic routes so small LLMs cannot miss obvious analytics intents.
+
+    These run BEFORE the LLM planner (in _resolve_question) so common
+    phrasings like "total sales", "describe the data", "how many rows",
+    "outliers", and "break down by region" always produce a valid plan —
+    even if the LLM planner fails or returns no_match.
+    """
+    q = (question or "").strip().lower()
+    if not q or not getattr(ds, "profile", None):
+        return None
+
+    # product guard: if user asks about "product" but no product column exists,
+    # refuse cleanly rather than silently substituting another column.
+    if re.search(r"\bproducts?\b", q):
+        cols = {c.name.lower() for c in ds.profile.columns}
+        if "product" not in cols and "products" not in cols:
+            return Plan(can_answer=False, reason="No product column in dataset", plan_type="no_match", steps=[])
+
+    # describe / profile / schema
+    if re.search(r"\b(describe|profile|summary of the data|what columns|schema)\b", q):
+        return Plan(
+            can_answer=True,
+            reason="deterministic: describe",
+            plan_type="stats_tool",
+            steps=[PlanStep(step_id=1, action="run_stats", target="describe", filters={}, args={})],
+        )
+
+    # row count / number of records
+    if re.search(r"\b(how many rows|row count|number of rows|number of records|how many records)\b", q):
+        return Plan(
+            can_answer=True,
+            reason="deterministic: row_count_via_describe",
+            plan_type="stats_tool",
+            steps=[PlanStep(step_id=1, action="run_stats", target="describe", filters={}, args={})],
+        )
+
+    # outliers / anomalies
+    if re.search(r"\b(outlier|outliers|anomal|anomaly)\b", q):
+        return Plan(
+            can_answer=True,
+            reason="deterministic: outliers",
+            plan_type="stats_tool",
+            steps=[PlanStep(step_id=1, action="run_stats", target="anomaly_detect", filters={}, args={})],
+        )
+
+    metrics = {}
+    try:
+        metrics = ds.get_metrics() or {}
+    except Exception:
+        metrics = {}
+
+    # total / sum revenue|sales|amount
+    # Exclude "highest"/"lowest" — those are max/min intents, not sum.
+    if (re.search(r"\b(total|sum|overall)\b", q)
+            and re.search(r"\b(revenue|sales|amount)\b", q)
+            and not re.search(r"\b(highest|lowest|top|best|max|min)\b", q)):
+        target = _pick_sum_metric(metrics, q)
+        if target:
+            return Plan(
+                can_answer=True,
+                reason="deterministic: total_sum_metric",
+                plan_type="single_metric",
+                steps=[PlanStep(step_id=1, action="run_metric", target=target, filters={}, args={})],
+            )
+
+    # breakdown by region/category
+    breakdown_plan = _forced_breakdown(question, ds)
+    if breakdown_plan is not None:
+        return breakdown_plan
+
+    return None
+
+
 # ── Top-level entrypoint ─────────────────────────────────────────────────
 
 def _resolve_question(
@@ -819,14 +971,22 @@ def _resolve_question(
     if cached is not None:
         return None, cached
 
-    try:
-        the_plan = plan(
-            question, ds, provider,
-            tenant_id=tenant_id, dataset_names=dataset_names,
-            prior_context=prior_context,
-        )
-    except Exception:
-        the_plan = Plan(can_answer=False, reason="LLM provider offline", plan_type="no_match")
+    # Deterministic planner fallbacks run BEFORE the LLM planner so common
+    # analytics intents (describe, row count, outliers, total sales, breakdown
+    # by region) always produce a valid plan — even if the LLM planner fails
+    # or returns no_match.
+    forced = _forced_plan_from_question(question, ds)
+    if forced is not None:
+        the_plan = forced
+    else:
+        try:
+            the_plan = plan(
+                question, ds, provider,
+                tenant_id=tenant_id, dataset_names=dataset_names,
+                prior_context=prior_context,
+            )
+        except Exception:
+            the_plan = Plan(can_answer=False, reason="LLM provider offline", plan_type="no_match")
 
     if not the_plan.can_answer or the_plan.plan_type == "no_match":
         metrics = ds.get_metrics()
@@ -837,7 +997,9 @@ def _resolve_question(
             num_cols = [c.name for c in ds.profile.columns if c.is_numeric]
             cat_cols = [c.name for c in ds.profile.columns if c.is_categorical]
 
-            # Match numeric column names or stems
+            # Match numeric column names or stems. Only return a column when
+            # there is an actual word match — never silently substitute the
+            # first numeric column for a non-existent one.
             def match_num_column():
                 words = q_lower.split()
                 for col in num_cols:
@@ -851,9 +1013,11 @@ def _resolve_question(
                             return col
                         if len(w) >= 3 and (w in col_lower or col_lower in w or w_stem in col_stem):
                             return col
-                return num_cols[0] if num_cols else None
+                return None
 
-            # Match categorical column names, stems, or categorical values (e.g. 'clothing', 'electronics')
+            # Match categorical column names, stems, or categorical values (e.g. 'clothing', 'electronics').
+            # Only return a column when there is an actual word match — never
+            # silently substitute the first categorical column for a non-existent one.
             def match_cat_column():
                 words = q_lower.split()
                 prof_cols_map = {c.name: c for c in ds.profile.columns} if ds.profile else {}
@@ -876,8 +1040,7 @@ def _resolve_question(
                         if any(w in ex_set or w.rstrip("s") in ex_set for w in words):
                             return col
 
-
-                return cat_cols[0] if cat_cols else None
+                return None
 
 
             num_match = match_num_column()

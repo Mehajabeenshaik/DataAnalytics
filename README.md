@@ -96,11 +96,27 @@ cp .env.example .env
 # Set JWT_SECRET_KEY to a long random secret
 
 # Run the API server (backend)
-uvicorn backend.app.main:app --reload --port 8001
+uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8001
 
 # Or run the CLI demo
 python backend/app/demo.py
 ```
+
+### Frontend shell (single-page app)
+
+Open `frontend/app/index.html` in a browser (or serve the folder):
+
+```bash
+# Option A: just open the file
+open frontend/app/index.html
+
+# Option B: serve the folder
+cd frontend/app && python -m http.server 8080
+# then open http://127.0.0.1:8080
+```
+
+The shell talks to `http://127.0.0.1:8001` with API key `ak_demo_key_12345`.
+Flow: create session → upload a CSV → ask a question → see answer, confidence, caveats, and lineage.
 
 Example:
 
