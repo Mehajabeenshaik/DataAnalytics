@@ -1,3 +1,4 @@
+import logging
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Depends, HTTPException, status
@@ -6,7 +7,23 @@ from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
-from config import JWT_SECRET_KEY, JWT_ALGORITHM, JWT_EXPIRE_MINUTES, AUTH_DB_PATH
+from config import (
+    JWT_SECRET_KEY,
+    JWT_ALGORITHM,
+    JWT_EXPIRE_MINUTES,
+    AUTH_DB_PATH,
+    LOG_LEVEL,
+    CORS_ORIGINS,
+    CORS_ALLOW_ALL,
+)
+
+
+# ── Logging ──────────────────────────────────────────────────────────────
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+_log = logging.getLogger("daana")
 
 
 AUTH_SCHEMA = """
@@ -22,14 +39,41 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 app = FastAPI(title="DataAnalytics", version="2.0")
 
-# ── CORS — required for cross-origin widget embed requests ────────────────
+# ── CORS — allowlisted origins, config-driven (see PRODUCTION.md) ─────────
+# A wildcard origin may NOT be combined with credentials (browser rule), so
+# when CORS_ORIGINS=* we keep credentials off and rely on API keys for the
+# widget. With an explicit allowlist we can still permit credentials.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=not CORS_ALLOW_ALL,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Security headers ──────────────────────────────────────────────────────
+from starlette.middleware.base import BaseHTTPMiddleware
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Add basic hardening headers to every response.
+
+    These are cheap, framework-level defenses that complement the safety
+    invariants enforced elsewhere (approved metrics, PII masking, RBAC).
+    Production TLS/proxy headers are configured at the reverse proxy.
+    """
+
+    async def dispatch(self, request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault("X-Content-Type-Options", "nosniff")
+        response.headers.setdefault("X-Frame-Options", "DENY")
+        response.headers.setdefault("Referrer-Policy", "no-referrer")
+        response.headers.setdefault("X-XSS-Protection", "1; mode=block")
+        return response
+
+
+app.add_middleware(SecurityHeadersMiddleware)
 
 # ── Mount widget API router ───────────────────────────────────────────────
 from .api_widget import widget_router  # noqa: E402

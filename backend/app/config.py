@@ -86,3 +86,17 @@ OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "")
 OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
 OIDC_REDIRECT_URI = os.getenv("OIDC_REDIRECT_URI", "")
 
+# ── Observability ─────────────────────────────────────────────────────────
+# Python logging level: DEBUG | INFO | WARNING | ERROR
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+
+# ── CORS hardening ────────────────────────────────────────────────────────
+# Comma-separated allowlist of browser/embed origins. "*" (the default) is
+# for local dev only — restrict it in production (see PRODUCTION.md). When
+# "*" is used, credentials are not sent, because the browser forbids
+# combining a wildcard origin with credentials.
+CORS_ORIGINS_RAW = os.getenv("CORS_ORIGINS", "*")
+CORS_ORIGINS = [o.strip() for o in CORS_ORIGINS_RAW.split(",") if o.strip()] or ["*"]
+CORS_ALLOW_ALL = "*" in CORS_ORIGINS
+
+
