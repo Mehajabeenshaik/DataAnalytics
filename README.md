@@ -211,7 +211,7 @@ python eval/run_trust_eval.py --provider mock
 pytest test_trust_safety.py -q
 ```
 
-The [Trust Report](docs/TRUST_REPORT.md) summarizes pass rate, adversarial refusal behavior, and PII leak checks. Use a real provider (`ollama` / `gemini`) when you need semantic quality numbers for a pilot.
+The [Trust Report](docs/TRUST_REPORT.md) summarizes pass rate, adversarial refusal behavior, and PII leak checks. A **real-LLM run** (local Ollama `nemotron-3-nano:4b`: 82.6% pass, 0 PII leaks) is published in [docs/TRUST_REPORT_ollama.md](docs/TRUST_REPORT_ollama.md), with a plain-English summary for non-engineers in [docs/TRUST.md](docs/TRUST.md). Use a real provider (`ollama` / `gemini`) when you need semantic quality numbers for a pilot.
 
 ---
 
