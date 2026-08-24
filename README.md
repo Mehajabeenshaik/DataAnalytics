@@ -75,6 +75,7 @@ Natural-language question
 - Structured observability
 - Audit log + export
 - JWT auth, API keys for the embeddable widget
+- Admin metric-approval console at `/admin` (approve/reject agent proposals)
 - Local SSO for pilots; OIDC integration points for Okta/Entra-style IdPs
 
 **Trust evidence**
@@ -117,6 +118,11 @@ cd frontend/app && python -m http.server 8080
 
 The shell talks to `http://127.0.0.1:8001` with API key `ak_demo_key_12345`.
 Flow: create session → upload a CSV → ask a question → see answer, confidence, caveats, and lineage.
+
+> **Admin console:** open `http://127.0.0.1:8001/admin` and sign in with an admin
+> account (local default `admin / admin123`) to review and approve/reject the
+> metric proposals the agent generates. Equivalently, the backend also serves
+> `frontend/app/index.html` at `/app` and the chat widget at `/`.
 
 Example:
 
@@ -183,7 +189,9 @@ Air-gapped and VPC-friendly by design: run Ollama (or vLLM) so data never leaves
 | **VPC / on-prem** | Enterprise data stays in customer network |
 | **Multi-tenant API** | SaaS-style tenants, quotas, audit export |
 
-See [docs/SECURITY.md](docs/SECURITY.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md), and [docs/SSO.md](docs/SSO.md).
+See [PRODUCTION.md](PRODUCTION.md) (go-live checklist),
+[docs/SECURITY.md](docs/SECURITY.md), [docs/THREAT_MODEL.md](docs/THREAT_MODEL.md),
+and [docs/SSO.md](docs/SSO.md).
 
 ---
 
@@ -236,8 +244,10 @@ This is the difference between a weekend agent demo and software you can put in 
 | `backend/app/data_source.py` | CSV / live DB load, profiling, PII |
 | `backend/app/tenant/` | Org/tenant identity + isolation |
 | `backend/app/sso/` + `backend/app/auth_sso_routes.py` | Local SSO; OIDC hooks in `auth.py` |
+| `backend/app/admin_api.py` + `frontend/app/admin.html` | Admin API (org/tenant, catalog approval) + console at `/admin` |
 | `backend/app/api_widget.py` + `frontend/embed/` | Embeddable chat bot |
 | `backend/tests/` | Test suite |
+| `PRODUCTION.md` | Go-live checklist (secrets, isolation, TLS, limits) |
 | `eval/` | Trust eval, golden sets, adversarial cases |
 | `docs/` | Security, threat model, pilot, trust report |
 
@@ -245,9 +255,9 @@ This is the difference between a weekend agent demo and software you can put in 
 
 ## Roadmap posture
 
-**Done:** governed agent, catalog workflow, multi-tenant limits, audit, trust eval, local SSO, live DB paths, multi-dataset registry.
+**Done:** governed agent, catalog workflow, multi-tenant limits, audit, trust eval, local SSO, live DB paths, multi-dataset registry, admin metric-approval console (`/admin`).
 
-**Next:** production OIDC against a real IdP, richer admin UX for metric approval, expanded customer golden sets from pilots.
+**Next:** production OIDC against a real IdP, deeper admin UX (e.g. catalog maintenance, quota management), expanded customer golden sets from pilots.
 
 ---
 
