@@ -21,4 +21,6 @@ pyyaml>=6.0
 # Optional: only needed for TENANT_STORE=postgres (Postgres tenant store)
 psycopg2-binary>=2.9.9
 slowapi>=0.1.9
+# Optional: only needed when OIDC_ENABLED=true (production SSO)
+authlib>=1.3
 pytest>=7.4

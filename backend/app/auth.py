@@ -350,40 +350,128 @@ from config import OIDC_ENABLED, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET
 
 @app.get("/auth/login/sso")
 async def sso_login():
-    """Start the SSO flow. With OIDC_ENABLED, redirect to the IdP.
+    """Start the OIDC authorization-code flow.
 
-    Integration point: build the authorization URL from OIDC_ISSUER and
-    OIDC_CLIENT_ID, then `return RedirectResponse(auth_url)`.
+    Redirects to the IdP authorize endpoint with a signed `state` (also set as
+    an HttpOnly cookie) so the callback can reject forged returns.
     """
     if not OIDC_ENABLED:
         raise HTTPException(
             status_code=501,
             detail="OIDC is disabled. Set OIDC_ENABLED=true and configure OIDC_ISSUER/CLIENT_ID to enable SSO.",
         )
-    # TODO(integration): construct the IdP authorization URL:
-    #   auth_url = f"{OIDC_ISSUER}/authorize?client_id={OIDC_CLIENT_ID}&redirect_uri={OIDC_REDIRECT_URI}&response_type=code&scope=openid%20email%20profile"
-    #   return RedirectResponse(auth_url)
-    raise HTTPException(
-        status_code=501,
-        detail="OIDC integration point: build the authorization URL from your IdP's discovery document.",
+
+    from fastapi.responses import RedirectResponse
+
+    from .auth_oidc import (
+        OIDCClient,
+        STATE_COOKIE,
+        STATE_MAX_AGE_SECONDS,
+        make_state,
+        new_nonce,
     )
+
+    client = OIDCClient()
+    nonce = new_nonce()
+    state = make_state(nonce)
+    url = client.build_authorize_url(state=state, nonce=nonce)
+    resp = RedirectResponse(url, status_code=307)
+    resp.set_cookie(
+        STATE_COOKIE,
+        state,
+        max_age=STATE_MAX_AGE_SECONDS,
+        httponly=True,
+        samesite="lax",
+    )
+    return resp
 
 
 @app.get("/auth/callback")
-async def sso_callback(code: str | None = None, state: str | None = None):
-    """IdP redirect callback. Exchange the code for tokens, then mint our JWT.
-
-    Integration point: call your IdP's token endpoint with (code, client_id,
-    client_secret, redirect_uri), validate the ID token, look up/create the
-    user in TenantService, resolve their tenant_id + roles, then call
-    create_access_token() with {"sub": ..., "role": ..., "tenant_id": ...}.
+async def sso_callback(
+    request: Request,
+    code: str | None = None,
+    state: str | None = None,
+    error: str | None = None,
+):
+    """Finish the OIDC flow: exchange the code, validate the ID token against
+    the IdP's published JWKS, map roles, and issue our own short-lived JWT.
     """
     if not OIDC_ENABLED:
         raise HTTPException(status_code=501, detail="OIDC is disabled.")
-    raise HTTPException(
-        status_code=501,
-        detail="OIDC integration point: exchange the IdP code for tokens, then issue a JWT with tenant_id + roles.",
+
+    from fastapi.responses import JSONResponse
+
+    from .auth_oidc import (
+        OIDCClient,
+        OIDCError,
+        STATE_COOKIE,
+        map_role,
+        read_state,
     )
+
+    if error:
+        raise HTTPException(status_code=401, detail=f"IdP returned an error: {error}")
+
+    # State must be present, signed by us, unexpired, and match the cookie.
+    cookie_state = request.cookies.get(STATE_COOKIE)
+    if not state or not cookie_state or state != cookie_state:
+        raise HTTPException(status_code=401, detail="OIDC state mismatch")
+    try:
+        state_claims = read_state(state)
+    except OIDCError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+    nonce = state_claims.get("nonce")
+
+    client = OIDCClient()
+    try:
+        tokens = client.exchange_code(code) if code else {}
+        claims = client.validate_id_token(tokens.get("id_token", ""), nonce=nonce)
+    except OIDCError as exc:
+        raise HTTPException(status_code=401, detail=str(exc))
+
+    email = claims["email"]
+    role = map_role(claims)
+
+    # Best-effort link to the tenant identity layer (optional dependency).
+    tenant_id: str | None = None
+    roles: list[str] = [role]
+    try:
+        from tenant.service import TenantService
+
+        svc = TenantService()
+        user = svc.ensure_user(email=email, name=claims.get("name", "")) if hasattr(svc, "ensure_user") else None
+        if user is not None and hasattr(svc, "list_memberships_for_user"):
+            memberships = svc.list_memberships_for_user(user.id)
+            if len(memberships) == 1:
+                tenant_id = memberships[0].tenant_id
+                if memberships[0].role:
+                    roles = [memberships[0].role]
+    except Exception:
+        pass  # tenant layer optional in minimal installs
+
+    token = create_access_token(
+        {
+            "sub": email,
+            "email": email,
+            "role": role,
+            "tenant_id": tenant_id,
+            "roles": roles,
+        }
+    )
+    resp = JSONResponse(
+        {
+            "access_token": token,
+            "token_type": "bearer",
+            "username": email,
+            "role": role,
+            "email": email,
+            "tenant_id": tenant_id,
+            "roles": roles,
+        }
+    )
+    resp.delete_cookie(STATE_COOKIE)
+    _log.info("OIDC login succeeded for '%s' (role=%s)", email, role)
+    return resp
 
 
 @app.post("/auth/token")

@@ -85,6 +85,13 @@ OIDC_ISSUER = os.getenv("OIDC_ISSUER", "")
 OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "")
 OIDC_CLIENT_SECRET = os.getenv("OIDC_CLIENT_SECRET", "")
 OIDC_REDIRECT_URI = os.getenv("OIDC_REDIRECT_URI", "")
+# Claim the IdP uses to advertise group/role memberships (Auth0 custom claim,
+# Keycloak "roles", Entra "groups"). Comma-separated fallbacks are supported.
+OIDC_ROLE_CLAIM = os.getenv("OIDC_ROLE_CLAIM", "roles")
+# Local role assigned when the IdP advertises no recognised admin/owner role.
+OIDC_DEFAULT_ROLE = os.getenv("OIDC_DEFAULT_ROLE", "viewer")
+# Space-separated scopes requested from the IdP.
+OIDC_SCOPE = os.getenv("OIDC_SCOPE", "openid email profile")
 
 # ── Observability ─────────────────────────────────────────────────────────
 # Python logging level: DEBUG | INFO | WARNING | ERROR
