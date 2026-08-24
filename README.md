@@ -260,6 +260,11 @@ This is the difference between a weekend agent demo and software you can put in 
 | `eval/` | Trust eval, golden sets, adversarial cases |
 | `docs/` | Security, threat model, pilot, trust report |
 
+> **Note on module layout:** live runtime code uses flat modules under
+> `backend/app/` (imported by name, e.g. `from config import …`). The
+> `backend/app/domain/` + `backend/app/infra/` packages are scaffolding for a
+> longer-term layered refactor and are not yet wired into the runtime paths.
+
 ---
 
 ## Roadmap posture
@@ -290,6 +295,8 @@ maintenance, quota management).
 ## License & contact
 
 Licensed under the [Apache License 2.0](LICENSE). © 2026 Mehajabeenshaik / DaAna Contributors.
+
+Before commercial licensing or sale, review the contributor/IP checklist in [docs/IP.md](docs/IP.md).
 
 For design-partner pilots or engineering collaboration, open an issue or reach out via the profile linked on GitHub.
 
