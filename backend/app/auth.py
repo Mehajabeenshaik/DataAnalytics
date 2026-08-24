@@ -1,12 +1,17 @@
 import logging
+import os
+import secrets
 import sqlite3
 from datetime import datetime, timedelta, timezone
-from fastapi import FastAPI, Depends, HTTPException, status
+from fastapi import FastAPI, Depends, HTTPException, Request, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+from slowapi.util import get_remote_address
 from config import (
     JWT_SECRET_KEY,
     JWT_ALGORITHM,
@@ -38,6 +43,11 @@ pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/auth/login")
 
 app = FastAPI(title="DataAnalytics", version="2.0")
+
+# ── Rate limiting ─────────────────────────────────────────────────────────
+limiter = Limiter(key_func=get_remote_address)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # ── CORS — allowlisted origins, config-driven (see PRODUCTION.md) ─────────
 # A wildcard origin may NOT be combined with credentials (browser rule), so
@@ -102,20 +112,42 @@ def _get_auth_db():
 
 
 def init_auth_db():
+    """Create the auth schema and seed a bootstrap admin only if the DB is empty.
+
+    Production-safe behaviour:
+    - Never hard-code a known password.
+    - The bootstrap password comes from BOOTSTRAP_ADMIN_PASSWORD, or is
+      randomly generated with secrets.token_urlsafe().
+    - The plaintext is printed ONCE on first boot and never stored.
+    - Subsequent starts do nothing (the DB already has users).
+    """
     conn = _get_auth_db()
     conn.executescript(AUTH_SCHEMA)
     existing = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+
     if existing == 0:
+        admin_user = os.getenv("BOOTSTRAP_ADMIN_USERNAME", "admin")
+        admin_pass = os.getenv("BOOTSTRAP_ADMIN_PASSWORD")
+
+        if not admin_pass:
+            admin_pass = secrets.token_urlsafe(16)
+
         conn.execute(
             "INSERT INTO users (username, hashed_pw, role) VALUES (?, ?, ?)",
-            ("admin", pwd_context.hash("admin123"), "admin"),
-        )
-        conn.execute(
-            "INSERT INTO users (username, hashed_pw, role) VALUES (?, ?, ?)",
-            ("viewer", pwd_context.hash("viewer123"), "viewer"),
+            (admin_user, pwd_context.hash(admin_pass), "admin"),
         )
         conn.commit()
-        print("Auth DB seeded: admin/admin123 (admin), viewer/viewer123 (viewer)")
+
+        print("=" * 60)
+        print("FIRST BOOT - BOOTSTRAP ADMIN CREATED")
+        print(f"  Username : {admin_user}")
+        print(f"  Password : {admin_pass}")
+        print("  -> Change this password immediately after first login.")
+        print("  -> Set BOOTSTRAP_ADMIN_PASSWORD in .env to control it on a fresh install.")
+        print("=" * 60)
+
+        _log.warning("Bootstrap admin '%s' created; change its password immediately.", admin_user)
+
     conn.close()
 
 
@@ -274,7 +306,12 @@ async def admin_ui():
 
 
 @app.post("/auth/login", response_model=Token)
-async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+@limiter.limit("10/minute")
+async def login(
+    request: Request,
+    form_data: OAuth2PasswordRequestForm = Depends(),
+):
+    """Login with per-IP rate limiting (10 attempts/minute) to slow brute force."""
     user = _authenticate(form_data.username, form_data.password)
     if not user:
         raise HTTPException(
@@ -378,6 +415,23 @@ async def register(user_data: UserCreate, admin: UserOut = Depends(require_admin
     conn.commit()
     conn.close()
     return UserOut(username=user_data.username, role=user_data.role)
+
+
+@app.post("/auth/users", response_model=UserOut, dependencies=[Depends(require_admin)])
+async def create_user(body: UserCreate, admin: UserOut = Depends(require_admin)):
+    """Create a new user (admin only). Alias of /auth/register for the admin console."""
+    conn = _get_auth_db()
+    try:
+        conn.execute(
+            "INSERT INTO users (username, hashed_pw, role) VALUES (?, ?, ?)",
+            (body.username, pwd_context.hash(body.password), body.role),
+        )
+        conn.commit()
+    except sqlite3.IntegrityError:
+        raise HTTPException(status_code=400, detail="Username already exists")
+    finally:
+        conn.close()
+    return UserOut(username=body.username, role=body.role)
 
 
 @app.get("/admin/reseed", dependencies=[Depends(require_admin)])

@@ -51,6 +51,21 @@ running governed analytics in front of real customers or a security review.
 - [ ] Enforce admin-only access to `/admin/*`, `/auth/register`, and metric
       approval routes (already role-gated: `admin` role required).
 
+### Critical: Bootstrap admin credentials
+
+On first boot (empty `auth.db`) a single admin user is created **without any
+hard-coded password**.
+
+- If `BOOTSTRAP_ADMIN_PASSWORD` is unset → a strong random password is
+  generated with `secrets.token_urlsafe(16)` and printed **once** to stdout.
+- Capture that password, log in, and change it immediately.
+- Never leave the bootstrap password in production; delete/replace it after
+  the initial login (it is only used when `auth.db` is empty).
+- The old default credentials (`admin` / `admin123`, `viewer` / `viewer123`)
+  have been **removed** from the codebase.
+- Extra users (including `viewer`-role accounts) are created by an admin via
+  `/auth/register` or `/auth/users`.
+
 ## Resource & safety limits
 
 - [ ] Set per-tenant quotas and row/plan-step/timeout limits to match your

@@ -120,9 +120,11 @@ The shell talks to `http://127.0.0.1:8001` with API key `ak_demo_key_12345`.
 Flow: create session → upload a CSV → ask a question → see answer, confidence, caveats, and lineage.
 
 > **Admin console:** open `http://127.0.0.1:8001/admin` and sign in with an admin
-> account (local default `admin / admin123`) to review and approve/reject the
-> metric proposals the agent generates. Equivalently, the backend also serves
-> `frontend/app/index.html` at `/app` and the chat widget at `/`.
+> account to review and approve/reject the metric proposals the agent generates.
+> On first boot a secure admin is created — set `BOOTSTRAP_ADMIN_PASSWORD` in
+> `.env`, or read the one-time random password the server prints to the console.
+> Equivalently, the backend also serves `frontend/app/index.html` at `/app` and
+> the chat widget at `/`.
 
 Example:
 
