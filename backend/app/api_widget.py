@@ -30,6 +30,7 @@ from tenant_quotas import QuotaExceededError
 from resource_limits import ResourceLimitError
 import agent_phase2
 import stats_tools
+from data_quality import build_quality_report
 
 widget_router = APIRouter(tags=["widget"])
 
@@ -69,6 +70,7 @@ class UploadResponse(BaseModel):
     summary: str
     sections: list[dict] = []
     insights: list[dict] = []
+    quality_report: dict = {}
 
 
 class AskRequest(BaseModel):
@@ -192,6 +194,22 @@ def _build_baseline_analysis(ds: DataSource) -> tuple[str, list[dict]]:
                 key_findings.append(f"• Identified **{len(outlier_df)} statistical outlier(s)** in **{num_cols[0].name}** requiring review.")
     except Exception:
         pass
+
+    qr = build_quality_report(ds)
+    warn_lines = qr.get("warnings") or []
+    pii = qr.get("pii_columns_masked") or {}
+    quality_bits = [f"{qr.get('n_rows', 0)} rows × {qr.get('n_cols', 0)} columns"]
+    if pii.get("count"):
+        quality_bits.append(f"PII masked: {pii['count']} column(s)")
+    if warn_lines:
+        quality_bits.append("Warnings:\n" + "\n".join(f"• {w}" for w in warn_lines[:8]))
+    else:
+        quality_bits.append("No quality warnings.")
+    sections.append({
+        "title": "Data quality",
+        "type": "text",
+        "data": "\n".join(quality_bits),
+    })
 
     if key_findings:
         sections.append({
@@ -375,10 +393,26 @@ async def upload_file(
             summary=summary,
             sections=sections,
             insights=insights,
+            quality_report=build_quality_report(ds),
+        )
+    except UnicodeDecodeError:
+        raise HTTPException(
+            status_code=400,
+            detail="This file is not UTF-8 encoded. Please re-save as CSV UTF-8 and try again.",
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
+        cause = e
+        seen: set[int] = set()
+        while cause is not None and id(cause) not in seen:
+            seen.add(id(cause))
+            if isinstance(cause, UnicodeDecodeError):
+                raise HTTPException(
+                    status_code=400,
+                    detail="This file is not UTF-8 encoded. Please re-save as CSV UTF-8 and try again.",
+                )
+            cause = cause.__cause__ or cause.__context__
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Upload failed: {str(e)}")
 

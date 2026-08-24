@@ -108,7 +108,8 @@ Produce a plan in STRICT JSON only:
 Rules:
 - Maximum 3 steps.
 - Only use metric names that appear in the catalog.
-- Only use tool names from the allowed tools list: describe, value_counts, correlation, group_compare, missingness, trend, anomaly_detect.
+- Only use tool names from the allowed tools list: describe, value_counts, correlation, group_compare, missingness, trend, anomaly_detect, filtered_agg.
+- For a named calendar month (e.g. "total sales in January"), use target="filtered_agg" with value_col, date_col, month (1-12), and agg. Never answer a month question with an unfiltered total.
 - For questions comparing totals/means across categories (e.g. "highest sales by region", "sales per region"), use plan_type="stats_tool", action="run_stats", target="group_compare", args={"value_col": "<numeric_col>", "group_col": "<cat_col>", "agg": "sum"}.
 - For questions that need data from two tables joined together, use plan_type="joined_metric" and set join_policy_name to one of the approved join policy names listed in context. Never invent a join_policy_name — only use the approved ones provided.
 - Filters may only use columns from the allowed filter list.
@@ -815,6 +816,7 @@ def synthesize_stream(
 
 _ID_LIKE = re.compile(r"(^id$|_id$)", re.I)
 _MONEY = {"sales", "revenue", "amount", "price", "income"}
+_RATING = {"rating", "customer_rating", "score", "stars"}
 
 
 def _pick_sum_metric(metrics: dict, question: str) -> str | None:
@@ -847,6 +849,227 @@ def _pick_sum_metric(metrics: dict, question: str) -> str | None:
         return None
     candidates.sort(reverse=True)
     return candidates[0][1]
+
+
+def _profile_maps(ds: DataSource) -> tuple[dict, dict, dict]:
+    """Map lowercase column names to real column names by kind.
+
+    Returns (cats, nums, dates) where each is {lowercase_name: real_name}.
+    Date columns are detected by name (date/time in the name) or dtype.
+    """
+    cats: dict[str, str] = {}
+    nums: dict[str, str] = {}
+    dates: dict[str, str] = {}
+    if not getattr(ds, "profile", None):
+        return cats, nums, dates
+    for c in ds.profile.columns:
+        low = c.name.lower()
+        if c.is_categorical:
+            cats[low] = c.name
+        if c.is_numeric:
+            nums[low] = c.name
+        if c.is_temporal or "date" in low or "time" in low:
+            dates[low] = c.name
+    return cats, nums, dates
+
+
+def _resolve_value_col(q: str, nums: dict[str, str]) -> str | None:
+    """Resolve the numeric VALUE column a question refers to.
+
+    rating/score words → the rating-like column; money words → the
+    sales/revenue-like column; otherwise an explicit column-name mention.
+    Never returns id-like columns.
+    """
+    ql = q.lower()
+    if re.search(r"\b(customer[_\s]?ratings?|rating|score|stars)\b", ql):
+        for k in ("customer_rating", "rating", "score", "stars"):
+            if k in nums:
+                return nums[k]
+    if re.search(r"\b(revenues?|sales?|amounts?)\b", ql):
+        for k in ("sales", "revenue", "amount"):
+            if k in nums:
+                return nums[k]
+    # fallback: explicit column name mentioned in the question
+    for k, real in nums.items():
+        if _ID_LIKE.search(real):
+            continue
+        if re.search(rf"\b{re.escape(k)}\b", ql) or re.search(
+            rf"\b{re.escape(k.replace('_', ' '))}\b", ql
+        ):
+            return real
+    return None
+
+
+def _resolve_group_col(q: str, cats: dict[str, str]) -> str | None:
+    """Resolve the categorical GROUP column a question groups by.
+
+    Looks at 'by <word>' patterns and common dimension words (region,
+    category, ...), with simple singular stemming (regions → region).
+    """
+    ql = q.lower()
+    candidates = list(re.findall(r"\bby\s+(\w+)\b", ql))
+    candidates.extend(re.findall(r"\b(region|category|status|segment|department|country|city|state)\b", ql))
+    for dim in reversed(candidates):
+        key = dim if dim in cats else dim.rstrip("s")
+        if key in cats:
+            return cats[key]
+    return None
+
+
+def _parse_month(q: str) -> int | None:
+    """Extract a calendar month (1-12) from month names or YYYY-MM patterns."""
+    from calendar import month_name, month_abbr
+
+    ql = q.lower()
+    for i in range(1, 13):
+        name = month_name[i].lower()
+        abbr = month_abbr[i].lower()
+        if re.search(rf"\b{name}\b", ql) or re.search(rf"\b{abbr}\b", ql):
+            return i
+    m = re.search(r"\b(20\d{2})-(\d{2})\b", ql)
+    if m:
+        mm = int(m.group(2))
+        if 1 <= mm <= 12:
+            return mm
+    return None
+
+
+def _forced_group_agg(question: str, ds: DataSource) -> "Plan | None":
+    """Deterministic plan for '<agg> VALUE by GROUP' questions.
+
+    Handles e.g. 'average customer_rating by region' (mean of the RATING
+    column — never silently substituted with a sales sum) and
+    'total sales by category'. Runs BEFORE generic breakdown so the
+    requested value column wins over the default money column.
+    """
+    q = (question or "").lower()
+    if not getattr(ds, "profile", None):
+        return None
+    cats, nums, dates = _profile_maps(ds)
+    if not cats or not nums:
+        return None
+
+    wants_mean = bool(re.search(r"\b(average|avg|mean)\b", q))
+    wants_sum = bool(re.search(r"\b(total|sum)\b", q)) or (
+        bool(re.search(r"\b(break\s*down|breakdown)\b", q)) and not wants_mean
+    )
+    has_by = bool(re.search(r"\bby\s+\w+", q))
+    if not (wants_mean or wants_sum or has_by):
+        return None
+
+    group_col = _resolve_group_col(q, cats)
+    if not group_col:
+        return None
+
+    # Rating words win over money so "average customer_rating by region"
+    # never silently becomes a sales sum. Money words still win for
+    # "average sales by region" even if a rating column also exists.
+    mentions_rating = bool(re.search(r"\b(customer[_\s]?ratings?|rating|score|stars)\b", q))
+    mentions_money = bool(re.search(r"\b(revenues?|sales?|amounts?|price|income)\b", q))
+
+    if mentions_rating:
+        agg = "mean"
+        value_col = None
+        for k in ("customer_rating", "rating", "score", "stars"):
+            if k in nums:
+                value_col = nums[k]
+                break
+        if value_col is None:
+            return None
+    elif wants_mean:
+        agg = "mean"
+        value_col = _resolve_value_col(q, nums)
+        if value_col is None:
+            return None
+    elif wants_sum or mentions_money:
+        agg = "sum"
+        value_col = _resolve_value_col(q, nums)
+        if value_col is None:
+            return None
+    elif has_by:
+        # bare "<value> by <group>" without explicit agg — treat as sum only
+        # when a money word is present, else mean.
+        value_col = _resolve_value_col(q, nums)
+        if value_col is None:
+            return None
+        agg = "sum" if any(m in q for m in _MONEY) else "mean"
+    else:
+        return None
+
+    args = {"group_col": group_col, "value_col": value_col, "agg": agg}
+    month = _parse_month(q)
+    if month is not None:
+        date_col = next(iter(dates.values()), None)
+        if not date_col:
+            return Plan(
+                can_answer=False,
+                reason="month filter cannot be applied: missing date column",
+                plan_type="no_match",
+                steps=[],
+            )
+        args["date_col"] = date_col
+        args["month"] = month
+
+    return Plan(
+        can_answer=True,
+        reason=f"deterministic: group_compare {agg} {value_col} by {group_col}"
+               + (f" month={args['month']}" if "month" in args else ""),
+        plan_type="stats_tool",
+        steps=[PlanStep(
+            step_id=1,
+            action="run_stats",
+            target="group_compare",
+            filters={},
+            args=args,
+        )],
+    )
+
+
+def _forced_month_total(question: str, ds: DataSource) -> "Plan | None":
+    """Deterministic plan for month-filtered totals, e.g. 'Total sales in January'.
+
+    Uses the filtered_agg stats tool so the month filter is actually applied.
+    If no date/value column exists, returns None ONLY when there is no month
+    in the question; with a month present but unusable, refuses via no_match
+    rather than risking an unfiltered total at high confidence.
+    """
+    q = (question or "").lower()
+    month = _parse_month(q)
+    if month is None:
+        return None
+    if not re.search(r"\b(total|sum|overall|revenue|sales|amount)\b", q):
+        return None
+
+    _, nums, dates = _profile_maps(ds)
+    value_col = _resolve_value_col(q, nums) or nums.get("sales")
+    date_col = next(iter(dates.values()), None)
+
+    if not value_col or not date_col:
+        # Month requested but we cannot apply it — refuse cleanly.
+        return Plan(
+            can_answer=False,
+            reason="month filter cannot be applied: missing date or value column",
+            plan_type="no_match",
+            steps=[],
+        )
+
+    return Plan(
+        can_answer=True,
+        reason=f"deterministic: filtered_agg sum {value_col} month={month}",
+        plan_type="stats_tool",
+        steps=[PlanStep(
+            step_id=1,
+            action="run_stats",
+            target="filtered_agg",
+            filters={},
+            args={
+                "value_col": value_col,
+                "agg": "sum",
+                "date_col": date_col,
+                "month": month,
+            },
+        )],
+    )
 
 
 def _forced_breakdown(question: str, ds: DataSource) -> "Plan | None":
@@ -933,6 +1156,19 @@ def _forced_plan_from_question(question: str, ds: DataSource) -> "Plan | None":
         metrics = ds.get_metrics() or {}
     except Exception:
         metrics = {}
+
+    # group agg: average/mean/sum VALUE by GROUP — BEFORE generic routes so
+    # "average customer_rating by region" means the rating mean, not a
+    # sales sum, and "total sales in January by region" keeps its filter.
+    group_agg_plan = _forced_group_agg(question, ds)
+    if group_agg_plan is not None:
+        return group_agg_plan
+
+    # month-filtered totals: "total sales in January" must NOT hit the
+    # generic unfiltered total route below.
+    month_plan = _forced_month_total(question, ds)
+    if month_plan is not None:
+        return month_plan
 
     # total / sum revenue|sales|amount
     # Exclude "highest"/"lowest" — those are max/min intents, not sum.
@@ -1249,7 +1485,7 @@ def ask(
         answer = synthesize(question, the_plan, results, provider)
 
         # Phase 6 — computed confidence. Never trust the LLM's own field.
-        verification = verify_answer(the_plan, results, answer)
+        verification = verify_answer(the_plan, results, answer, question=question)
         answer["confidence"] = verification["computed_confidence"]
         if verification["flags"]:
             caveats = answer.get("caveats") or []
@@ -1425,7 +1661,7 @@ def ask_stream(
 
         if final_answer is not None:
             # Phase 6 — computed confidence. Never trust the LLM's own field.
-            verification = verify_answer(the_plan, results, final_answer)
+            verification = verify_answer(the_plan, results, final_answer, question=question)
             final_answer["confidence"] = verification["computed_confidence"]
             if verification["flags"]:
                 caveats = final_answer.get("caveats") or []

@@ -168,7 +168,17 @@ class DataSource:
         self.table_name = table_name
 
         if path.suffix.lower() in {".csv", ".tsv"}:
-            df = pd.read_csv(path)
+            sep = "\t" if path.suffix.lower() == ".tsv" else ","
+            try:
+                df = pd.read_csv(path, encoding="utf-8", sep=sep)
+            except UnicodeDecodeError as exc:
+                raise UnicodeDecodeError(
+                    exc.encoding or "utf-8",
+                    exc.object,
+                    exc.start,
+                    exc.end,
+                    "This file is not UTF-8 encoded. Please re-save as CSV UTF-8 and try again.",
+                ) from exc
         elif path.suffix.lower() in {".parquet", ".pq"}:
             df = pd.read_parquet(path)
         elif path.suffix.lower() in {".xlsx", ".xls"}:

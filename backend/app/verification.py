@@ -21,7 +21,23 @@ was used. Without those keys the checks simply no-op (safe default).
 """
 from __future__ import annotations
 
+import re
 from typing import Any
+
+
+def _month_requested(question: str | None) -> bool:
+    """True when the question names a calendar month (name, abbr, or YYYY-MM)."""
+    if not question:
+        return False
+    from calendar import month_name, month_abbr
+
+    ql = question.lower()
+    for i in range(1, 13):
+        if re.search(rf"\b{month_name[i].lower()}\b", ql) or re.search(
+            rf"\b{month_abbr[i].lower()}\b", ql
+        ):
+            return True
+    return bool(re.search(r"\b(20\d{2})-(\d{2})\b", ql))
 
 
 def verify_breakdown_sums_to_total(
@@ -52,7 +68,7 @@ def verify_breakdown_sums_to_total(
         return True, None
 
 
-def verify_answer(plan: Any, results: list[dict], synthesized: dict) -> dict:
+def verify_answer(plan: Any, results: list[dict], synthesized: dict, question: str | None = None) -> dict:
     flags: list[str] = []
 
     parse_failed = synthesized.get("_parse_failed", False)
@@ -85,6 +101,17 @@ def verify_answer(plan: Any, results: list[dict], synthesized: dict) -> dict:
         # Truncated results can never be "high confidence"
         if r.get("_truncated"):
             flags.append(f"result_truncated:{target}")
+
+    # Month guard (P0.5): if the question names a calendar month but no
+    # executed step applied a month filter, the time filter was NOT applied —
+    # the answer may be an unfiltered total. Force low confidence + caveat.
+    if question and _month_requested(question):
+        applied = any(
+            isinstance(r.get("args"), dict) and r["args"].get("month") is not None
+            for r in results
+        )
+        if not applied:
+            flags.append("time_filter_not_applied")
 
     if execution_error or parse_failed:
         computed_confidence = "low"

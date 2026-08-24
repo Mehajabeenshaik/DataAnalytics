@@ -221,12 +221,21 @@ def test_run_stats_tool_unknown_tool(ds):
         run_stats_tool(ds, "nonexistent_tool", {})
 
 
-def test_allowed_stats_tools_has_six_tools():
-    assert len(ALLOWED_STATS_TOOLS) == 6
+def test_allowed_stats_tools_catalog_size():
+    assert len(ALLOWED_STATS_TOOLS) == 8
 
 
 def test_valid_tool_names():
-    expected = {"describe", "value_counts", "correlation", "group_compare", "missingness", "trend"}
+    expected = {
+        "describe",
+        "value_counts",
+        "correlation",
+        "group_compare",
+        "missingness",
+        "trend",
+        "anomaly_detect",
+        "filtered_agg",
+    }
     assert VALID_TOOL_NAMES == expected
 
 

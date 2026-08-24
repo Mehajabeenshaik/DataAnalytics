@@ -40,4 +40,6 @@ jobs:
             backend/tests/test_synonym_coverage.py \
             backend/tests/test_verification.py \
             backend/tests/test_agent_phase2.py \
+            backend/tests/test_analyst_routes.py \
+            backend/tests/test_data_quality.py \
             -q --tb=line

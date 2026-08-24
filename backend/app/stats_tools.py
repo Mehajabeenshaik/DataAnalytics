@@ -64,6 +64,8 @@ ALLOWED_STATS_TOOLS: list[dict] = [
             "value_col": "numeric column name",
             "group_col": "categorical column name",
             "agg": '"sum", "mean", "max", or "min"',
+            "date_col": "optional date column to filter by calendar month",
+            "month": "optional int 1-12; when set with date_col, only that month is included",
         },
     },
     {
@@ -93,6 +95,17 @@ ALLOWED_STATS_TOOLS: list[dict] = [
         "description": "Identify statistical outliers or anomalies in a numeric column using Z-score.",
         "synonyms": ["outliers", "anomalies", "unusual values", "extreme values", "anomaly detection"],
         "args": {"value_col": "numeric column name", "threshold": "float Z-score threshold, default 2.0"},
+    },
+    {
+        "name": "filtered_agg",
+        "description": "Aggregate (sum/mean/count/max/min) of a numeric column over rows filtered by a month on a date column.",
+        "synonyms": ["total in a month", "sales for january", "monthly total"],
+        "args": {
+            "value_col": "numeric column name",
+            "agg": '"sum", "mean", "count", "max", or "min"',
+            "date_col": "date/time column name to filter on",
+            "month": "int 1-12",
+        },
     },
 ]
 
@@ -228,11 +241,30 @@ def correlation(ds: DataSource, col_a: str, col_b: str) -> float:
     return float(val) if val is not None else 0.0
 
 
+def _month_where(ds: DataSource, date_col: str | None, month: int | None) -> tuple[str, list]:
+    """SQL fragment + params that restrict rows to a calendar month.
+
+    Returns ("", []) when no month filter is requested. Raises if a month
+    is requested but the date column is missing — callers must not silently
+    drop the filter.
+    """
+    if date_col is None or month is None:
+        return "", []
+    _validate_column(ds, date_col)
+    return (
+        f'WHERE "{date_col}" IS NOT NULL '
+        f'AND EXTRACT(MONTH FROM CAST("{date_col}" AS DATE)) = ?',
+        [int(month)],
+    )
+
+
 def group_compare(
     ds: DataSource,
     value_col: str,
     group_col: str,
     agg: str = "sum",
+    date_col: str | None = None,
+    month: int | None = None,
 ) -> pd.Series:
     """Sum or mean of a numeric column grouped by a categorical column."""
     _validate_column(ds, value_col)
@@ -250,13 +282,16 @@ def group_compare(
         "max": "MAX",
         "min": "MIN",
     }[agg_lower]
+    where_sql, params = _month_where(ds, date_col, month)
     df = ds.query(
         f"""
         SELECT "{group_col}" AS key, {sql_agg}("{value_col}") AS value
         FROM {ds.table_name}
+        {where_sql}
         GROUP BY 1
         ORDER BY value DESC
-        """
+        """,
+        params,
     )
     return df.set_index("key")["value"]
 
@@ -327,6 +362,45 @@ def trend(
     return df
 
 
+def filtered_agg(
+    ds: DataSource,
+    value_col: str,
+    agg: str = "sum",
+    date_col: str | None = None,
+    month: int | None = None,
+) -> float | int:
+    """Aggregate a numeric column over rows filtered by calendar month.
+
+    If date_col and month are provided, only rows whose date falls in that
+    calendar month are included. If the filter cannot be applied (missing
+    date column or unparseable dates), raises ValueError so the caller can
+    refuse rather than silently return an UNFILTERED total.
+    """
+    _validate_column(ds, value_col)
+    if not _is_numeric(ds, value_col):
+        raise ValueError(f"'{value_col}' is not numeric. filtered_agg requires a numeric value column.")
+
+    agg_lower = (agg or "sum").lower()
+    if agg_lower not in ("sum", "mean", "count", "max", "min"):
+        raise ValueError(f"agg must be 'sum', 'mean', 'count', 'max', or 'min', got '{agg}'")
+
+    where_sql, params = _month_where(ds, date_col, month)
+
+    sql_agg = {"sum": "SUM", "mean": "AVG", "count": "COUNT", "max": "MAX", "min": "MIN"}[agg_lower]
+    df = ds.query(
+        f'SELECT {sql_agg}("{value_col}") AS v FROM {ds.table_name} {where_sql}',
+        params,
+    )
+    val = df.iloc[0, 0]
+    if val is None or pd.isna(val):
+        # Month filter matched zero rows — surface as error, never a fake 0.
+        # (DuckDB NULL arrives via fetchdf() as NaN, not Python None.)
+        raise ValueError(f"No rows found for month {month} on '{date_col}'")
+    if agg_lower == "count":
+        return int(val)
+    return float(val)
+
+
 def anomaly_detect(ds: DataSource, value_col: str, threshold: float = 2.0) -> pd.DataFrame:
     """Identify statistical outliers/anomalies in a numeric column via Z-score."""
     _validate_column(ds, value_col)
@@ -370,7 +444,12 @@ def run_stats_tool(ds: DataSource, tool_name: str, args: dict) -> Any:
         return correlation(ds, args["col_a"], args["col_b"])
     elif tool_name == "group_compare":
         return group_compare(
-            ds, args["value_col"], args["group_col"], args.get("agg", "sum")
+            ds,
+            args["value_col"],
+            args["group_col"],
+            args.get("agg", "sum"),
+            args.get("date_col"),
+            args.get("month"),
         )
     elif tool_name == "missingness":
         return missingness(ds, args.get("columns"))
@@ -378,5 +457,13 @@ def run_stats_tool(ds: DataSource, tool_name: str, args: dict) -> Any:
         return trend(ds, args["date_col"], args["value_col"], args.get("freq", "M"))
     elif tool_name == "anomaly_detect":
         return anomaly_detect(ds, args["value_col"], args.get("threshold", 2.0))
+    elif tool_name == "filtered_agg":
+        return filtered_agg(
+            ds,
+            args["value_col"],
+            args.get("agg", "sum"),
+            args.get("date_col"),
+            args.get("month"),
+        )
     else:
         raise ValueError(f"Tool '{tool_name}' not implemented.")
