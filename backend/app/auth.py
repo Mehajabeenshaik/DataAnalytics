@@ -35,6 +35,17 @@ app.add_middleware(
 from .api_widget import widget_router  # noqa: E402
 app.include_router(widget_router)
 
+
+@app.get("/health")
+async def health():
+    """Liveness probe used by container orchestrators / docker healthcheck.
+
+    Deliberately dependency-free: it must respond even if the LLM provider
+    or auxiliary stores are temporarily unavailable, so orchestrators can
+    restart only the dead container instead of the whole service.
+    """
+    return {"status": "ok", "service": "daana", "version": "2.0"}
+
 # ── Mount SSO router ──────────────────────────────────────────────────────
 from .auth_sso_routes import sso_router  # noqa: E402
 app.include_router(sso_router)
@@ -152,11 +163,17 @@ def startup():
     threading.Thread(target=_warmup_model, daemon=True).start()
 
 
+from fastapi.responses import HTMLResponse, FileResponse
+from pathlib import Path
 
-from fastapi.responses import HTMLResponse
 
 @app.get("/", response_class=HTMLResponse)
 async def root():
+    """API status page with the chat widget embedded right inline.
+
+    Opening this URL shows the purple chat FAB (bottom-right) immediately —
+    no need to hunt for frontend/app/index.html or widget-test.html.
+    """
     return """
     <!DOCTYPE html>
     <html>
@@ -175,21 +192,30 @@ async def root():
     </head>
     <body>
         <h1>DataAnalytics API is live</h1>
-        <p><span class="badge">OK</span> FastAPI backend running</p>
-        <p>If port 8000 is used by another app (e.g. Splunk), run on <b>8001</b>.</p>
-        <p>Embed the chat widget:</p>
-        <pre>&lt;script
-  src="http://127.0.0.1:8001/widget/widget.js"
-  data-api-key="ak_demo_key_12345"
-  data-api-url="http://127.0.0.1:8001"
-  data-theme-color="#7c5cfc"&gt;&lt;/script&gt;</pre>
-        <p>Or open <code>widget-test.html</code> in this repo.</p>
+        <p><span class="badge">OK</span> FastAPI backend running on port 8001</p>
+        <p>The chat bot (purple FAB, bottom-right) is ready — no extra files needed.</p>
+
+        <!-- Chat bot widget — loads immediately on this page -->
+        <script
+          src="/widget/widget.js"
+          data-api-key="ak_demo_key_12345"
+          data-api-url=""
+          data-theme-color="#7c5cfc"></script>
     </body>
     </html>
     """
 
-@app.post("/auth/login", response_model=Token)
 
+@app.get("/app", response_class=HTMLResponse)
+async def spa():
+    """Serve the full upload + ask UI (frontend/app/index.html)."""
+    app_path = Path(__file__).resolve().parents[2] / "frontend" / "app" / "index.html"
+    if not app_path.exists():
+        return HTMLResponse("<h1>App not built</h1>", status_code=404)
+    return FileResponse(str(app_path))
+
+
+@app.post("/auth/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     user = _authenticate(form_data.username, form_data.password)
     if not user:

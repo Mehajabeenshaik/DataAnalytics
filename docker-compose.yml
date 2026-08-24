@@ -4,14 +4,15 @@ services:
   dataanalytics:
     build: .
     ports:
-      - "8000:8000"
+      - "8001:8001"
     environment:
-      - JWT_SECRET_KEY=demo_secret_key_change_in_production_12345
-      - LLM_PROVIDER=ollama
-      - OLLAMA_BASE_URL=http://host.docker.internal:11434
-      - OLLAMA_MODEL=nemotron-3-nano:4b
-      # Tenant store — set to postgres to use the Postgres backend
-      - TENANT_STORE=file
+      # Production must override this via a .env file or the host environment.
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-change-me-in-production-32chars-minimum}
+      - LLM_PROVIDER=${LLM_PROVIDER:-ollama}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-nemotron-3-nano:4b}
+      - TENANT_STORE=${TENANT_STORE:-file}
+      - TENANT_ISOLATION_ENABLED=${TENANT_ISOLATION_ENABLED:-true}
       # Uncomment and set when TENANT_STORE=postgres:
       # - TENANT_DATABASE_URL=postgresql://analytics:analytics@postgres:5432/tenantdb
     depends_on:
@@ -19,7 +20,13 @@ services:
         condition: service_healthy
     extra_hosts:
       - "host.docker.internal:host-gateway"
-    restart: always
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
 
   postgres:
     image: postgres:16-alpine
