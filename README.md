@@ -264,9 +264,18 @@ This is the difference between a weekend agent demo and software you can put in 
 
 ## Roadmap posture
 
-**Done:** governed agent, catalog workflow, multi-tenant limits, audit, trust eval, local SSO, live DB paths, multi-dataset registry, admin metric-approval console (`/admin`).
+**Done (as of Aug 2026):**
+governed agent (LLM never generates executable SQL/Python), metric catalog +
+propose/approve workflow with admin console (`/admin`), multi-tenant limits
+and isolation, audit log + export, safe bootstrap auth (no default passwords)
+with rate-limited login and in-app password change, Apache-2.0 license,
+production checklist, Docker hardening (non-root + healthcheck),
+config-driven CORS/security headers, configurable demo API key.
 
-**Next:** production OIDC against a real IdP, deeper admin UX (e.g. catalog maintenance, quota management), expanded customer golden sets from pilots.
+**Next (design-partner blockers):**
+production OIDC against a real IdP (Okta / Entra / Auth0), expanded customer
+golden sets from pilots, API-key rotation UI, richer admin UX (catalog
+maintenance, quota management).
 
 ---
 
