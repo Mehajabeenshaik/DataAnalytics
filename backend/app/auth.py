@@ -434,6 +434,51 @@ async def create_user(body: UserCreate, admin: UserOut = Depends(require_admin))
     return UserOut(username=body.username, role=body.role)
 
 
+MIN_PASSWORD_LENGTH = 10
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.post("/auth/change-password")
+async def change_password(
+    body: PasswordChange,
+    user: UserOut = Depends(get_current_user),
+):
+    """Change the logged-in user's own password.
+
+    - 200 on success (old sessions' tokens remain valid until expiry).
+    - 400 if the new password is below MIN_PASSWORD_LENGTH.
+    - 401 if the current password is wrong or the token is invalid.
+    """
+    if len(body.new_password) < MIN_PASSWORD_LENGTH:
+        raise HTTPException(
+            status_code=400,
+            detail=f"New password must be at least {MIN_PASSWORD_LENGTH} characters",
+        )
+
+    conn = _get_auth_db()
+    try:
+        row = conn.execute(
+            "SELECT hashed_pw FROM users WHERE username = ?", (user.username,)
+        ).fetchone()
+        if not row or not pwd_context.verify(body.current_password, row["hashed_pw"]):
+            raise HTTPException(status_code=401, detail="Current password is incorrect")
+
+        conn.execute(
+            "UPDATE users SET hashed_pw = ? WHERE username = ?",
+            (pwd_context.hash(body.new_password), user.username),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    _log.info("Password changed for user '%s'", user.username)
+    return {"status": "password_changed", "username": user.username}
+
+
 @app.get("/admin/reseed", dependencies=[Depends(require_admin)])
 async def reseed_data():
     """Rebuild ecommerce.db (+ encrypted twin) with deterministic sample data."""

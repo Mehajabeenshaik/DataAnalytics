@@ -2,6 +2,13 @@
 
 **Governed AI for business data — without letting the model touch your database.**
 
+> **About / repo settings** — owner checklist (set once in GitHub → Settings → General):
+>
+> - **Description:**
+>   `Governed AI analytics agent — LLM never writes SQL. Human-approved metrics only. PII-masked. Audit + lineage on every answer.`
+> - **Topics:** `data-analytics` `llm-agent` `governed-ai` `duckdb` `fastapi` `pii-masking` `multi-tenant` `enterprise-ai` `text-to-sql-alternative`
+> - License badge should read **Apache-2.0** after the LICENSE re-sync.
+
 Most "chat with your data" products solve the demo problem and create a production problem: the LLM writes SQL (or Python), runs it, and occasionally returns confident nonsense — sometimes over sensitive columns.
 
 DataAnalytics takes the opposite approach.

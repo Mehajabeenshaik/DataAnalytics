@@ -65,6 +65,9 @@ hard-coded password**.
   have been **removed** from the codebase.
 - Extra users (including `viewer`-role accounts) are created by an admin via
   `/auth/register` or `/auth/users`.
+- The bootstrap password can be rotated in-app via `POST /auth/change-password`
+  (any logged-in user changes their own; min 10 chars) or from the
+  **Change password** form on the `/admin` console.
 
 ## Resource & safety limits
 

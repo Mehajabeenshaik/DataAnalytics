@@ -45,6 +45,18 @@
     <p class="status">Sign in with a bootstrap admin. On first boot a random password is generated and printed to the server console. (Set <code>BOOTSTRAP_ADMIN_PASSWORD</code> in .env to control it.)</p>
   </div>
 
+  <!-- Change password -->
+  <div class="card" id="pwCard" style="display:none">
+    <strong>Change password</strong>
+    <p class="status">Recommended after first login with a bootstrap password.</p>
+    <label>Current password</label>
+    <input type="password" id="curPw" autocomplete="current-password" />
+    <label>New password (min 10 chars)</label>
+    <input type="password" id="newPw" autocomplete="new-password" />
+    <button onclick="changePassword()">Update password</button>
+    <p id="pwMsg" class="status"></p>
+  </div>
+
   <!-- Tenant selection -->
   <div class="card" id="tenantCard" style="display:none">
     <strong>Tenant</strong>
@@ -77,6 +89,7 @@
       TOKEN = data.access_token;
       localStorage.setItem("daana_admin_token", TOKEN);
       document.getElementById("loginCard").style.display = "none";
+      document.getElementById("pwCard").style.display = "block";
       await loadTenants();
     }
 
@@ -149,13 +162,36 @@
         "<p class='" + (isErr ? "err" : "status") + "'>" + escapeHtml(msg) + "</p>";
     }
 
+    async function changePassword() {
+      const msg = document.getElementById("pwMsg");
+      const cur = document.getElementById("curPw").value;
+      const next = document.getElementById("newPw").value;
+      if (next.length < 10) { msg.className = "err"; msg.textContent = "New password must be at least 10 characters."; return; }
+      const res = await fetch(API + "/auth/change-password", {
+        method: "POST",
+        headers: hdr(true),
+        body: JSON.stringify({ current_password: cur, new_password: next })
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok) {
+        msg.className = "meta"; msg.textContent = "Password updated.";
+        document.getElementById("curPw").value = ""; document.getElementById("newPw").value = "";
+      } else {
+        msg.className = "err"; msg.textContent = data.detail || ("Failed (" + res.status + ")");
+      }
+    }
+
     function escapeHtml(s) {
       return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
         ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
     }
 
     // If a token already exists, try to go straight to tenants.
-    if (TOKEN) { document.getElementById("loginCard").style.display = "none"; loadTenants(); }
+    if (TOKEN) {
+      document.getElementById("loginCard").style.display = "none";
+      document.getElementById("pwCard").style.display = "block";
+      loadTenants();
+    }
   </script>
 </body>
 </html>
