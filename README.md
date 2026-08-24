@@ -130,12 +130,14 @@ Confidence: high
 ### Develop / CI
 
 ```bash
-# Run the test gate (planner reliability, synonyms, verification, agent)
+# Run the test gate (planner reliability, synonyms, verification, agent, analyst routes)
 python -m pytest \
   backend/tests/test_p0_planner_routes.py \
   backend/tests/test_synonym_coverage.py \
   backend/tests/test_verification.py \
-  backend/tests/test_agent_phase2.py -q
+  backend/tests/test_agent_phase2.py \
+  backend/tests/test_analyst_routes.py \
+  backend/tests/test_data_quality.py -q
 
 # Run backend API (port 8001)
 python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8001
@@ -144,7 +146,9 @@ python -m uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8001
 cd frontend/app && python -m http.server 8080
 ```
 
-CI (`.github/workflows/ci.yml`) runs the same four test modules on `ubuntu-latest` for every push/PR.
+CI (`.github/workflows/ci.yml`) runs the same test modules on `ubuntu-latest` for every push/PR.
+
+With the API running, the analyst UI is also served at `http://127.0.0.1:8001/app`.
 
 ### Embeddable chat widget
 
@@ -257,7 +261,9 @@ This is the difference between a weekend agent demo and software you can put in 
 
 ## License & contact
 
-See repository license. For design-partner pilots or engineering collaboration, open an issue or reach out via the profile linked on GitHub.
+Licensed under the [Apache License 2.0](LICENSE). © 2026 Mehajabeenshaik / DaAna Contributors.
+
+For design-partner pilots or engineering collaboration, open an issue or reach out via the profile linked on GitHub.
 
 ---
 
