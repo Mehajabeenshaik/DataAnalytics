@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>DaAna — Admin · Metric Approval</title>
+  <style>
+    :root {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+      color: #e8e8ef; background: #0e0e16;
+      --accent: #7c5cfc; --ok: #16a34a; --err: #dc2626;
+    }
+    body { max-width: 920px; margin: 24px auto; padding: 0 16px; }
+    h1 { color: var(--accent); margin-bottom: 4px; }
+    .sub { color: #9aa; margin-bottom: 20px; }
+    .card { background: #161622; border: 1px solid #2a2a3a; border-radius: 12px; padding: 16px; margin-bottom: 16px; }
+    input[type=text], input[type=password], select {
+      width: 100%; padding: 12px; border-radius: 8px; border: 1px solid #333;
+      background: #0e0e16; color: #eee; box-sizing: border-box; margin-bottom: 10px;
+    }
+    label { display: block; margin-top: 8px; font-size: 13px; color: #c8c8d8; }
+    button { background: var(--accent); color: white; border: 0; border-radius: 8px; padding: 10px 14px; cursor: pointer; font-size: 14px; margin-right: 8px; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .approve { background: var(--ok); }
+    .reject { background: var(--err); }
+    .status { color: #8c8c9a; font-size: 12px; }
+    .meta { color: #8d8; font-size: 12px; margin-top: 8px; }
+    .err { color: #f88; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 11px; background: #2a2a3a; margin-right: 6px; }
+    p { margin: 6px 0; }
+  </style>
+</head>
+<body>
+  <h1>Metric Approval</h1>
+  <p class="sub">Review metric proposals the agent wants to add to the governed catalog. Approving lets the LLM planner use a metric; rejecting keeps it out.</p>
+
+  <!-- Login -->
+  <div class="card" id="loginCard">
+    <strong>Sign in (admin)</strong>
+    <label>Username</label>
+    <input type="text" id="username" value="admin" autocomplete="username" />
+    <label>Password</label>
+    <input type="password" id="password" autocomplete="current-password" />
+    <button onclick="login()">Sign in</button>
+    <p class="status">Local SSO default: <code>admin / admin123</code></p>
+  </div>
+
+  <!-- Tenant selection -->
+  <div class="card" id="tenantCard" style="display:none">
+    <strong>Tenant</strong>
+    <label>Select the tenant whose catalog to review:</label>
+    <select id="tenantSelect" onchange="loadPending()"></select>
+  </div>
+
+  <!-- Pending proposals -->
+  <div id="list"><p class="status">Loading…</p></div>
+
+    const API = "http://127.0.0.1:8001";
+    let TOKEN = localStorage.getItem("daana_admin_token") || "";
+
+    function hdr(json) {
+      const h = { "Authorization": "Bearer " + TOKEN };
+      if (json) h["Content-Type"] = "application/json";
+      return h;
+    }
+
+    async function login() {
+      const u = document.getElementById("username").value;
+      const p = document.getElementById("password").value;
+      const res = await fetch(API + "/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: new URLSearchParams({ username: u, password: p })
+      });
+      if (!res.ok) { showLog("Login failed (" + res.status + ")", true); return; }
+      const data = await res.json();
+      TOKEN = data.access_token;
+      localStorage.setItem("daana_admin_token", TOKEN);
+      document.getElementById("loginCard").style.display = "none";
+      await loadTenants();
+    }
+
+    async function loadTenants() {
+      document.getElementById("tenantCard").style.display = "block";
+      const res = await fetch(API + "/admin/tenants", { headers: hdr() });
+      if (res.status === 401 || res.status === 403) {
+        showLog("Not authorized — sign in as an admin.", true);
+        localStorage.removeItem("daana_admin_token"); TOKEN = "";
+        document.getElementById("loginCard").style.display = "block";
+        return;
+      }
+      if (!res.ok) { showLog("Failed to load tenants (" + res.status + ")", true); return; }
+      const data = await res.json();
+      const sel = document.getElementById("tenantSelect");
+      sel.innerHTML = "";
+      (data.tenants || []).forEach(t => {
+        const opt = document.createElement("option");
+        opt.value = t.id;
+        opt.textContent = t.name + " (" + t.id + ")";
+        sel.appendChild(opt);
+      });
+      if ((data.tenants || []).length) loadPending(); else showLog("No tenants configured yet.", true);
+    }
+
+    async function loadPending() {
+      const list = document.getElementById("list");
+      list.innerHTML = "<p class='status'>Loading proposals…</p>";
+      const tid = document.getElementById("tenantSelect").value;
+      if (!tid) { list.innerHTML = ""; return; }
+      const res = await fetch(API + "/admin/tenants/" + encodeURIComponent(tid) + "/catalog/pending", { headers: hdr() });
+      if (!res.ok) { list.innerHTML = "<p class='err'>Failed (" + res.status + ")</p>"; return; }
+      const data = await res.json();
+      const pending = data.pending || [];
+      if (!pending.length) { list.innerHTML = "<p class='status'>No pending proposals for this tenant.</p>"; return; }
+      list.innerHTML = pending.map(p => {
+        const m = p.metric || {};
+        const filters = Object.entries(m.base_filters || {})
+          .map(([k, v]) => k + "=" + JSON.stringify(v)).join(", ");
+        return `
+          <div class="card" id="card-${p.proposal_id}">
+            <strong>${escapeHtml(m.name)}</strong>
+            <span class="pill">${escapeHtml(m.agg || "?")}(${escapeHtml(m.column || "?")})</span>
+            ${m.groupby ? `<span class="pill">group by ${escapeHtml(m.groupby)}</span>` : ""}
+            <p>${escapeHtml(m.description || "")}</p>
+            <p class="status">From question: “${escapeHtml(p.question)}”</p>
+            <p class="status">Proposed by ${escapeHtml(p.proposed_by || "agent")} · ${escapeHtml(p.proposed_at || "")}</p>
+            ${filters ? `<p class="status">filters: ${escapeHtml(filters)}</p>` : ""}
+            <p class="status">synonyms: ${escapeHtml((m.synonyms || []).join(", ") || "—")}</p>
+            <button class="approve" onclick="act('${p.proposal_id}','approve')">Approve</button>
+            <button class="reject" onclick="act('${p.proposal_id}','reject')">Reject</button>
+          </div>`;
+      }).join("");
+    }
+
+    async function act(id, action) {
+      const tid = document.getElementById("tenantSelect").value;
+      const reason = action === "reject" ? (prompt("Reason for rejection? (optional)") || "") : "";
+      const res = await fetch(
+        API + "/admin/tenants/" + encodeURIComponent(tid) + "/catalog/" + action + "/" + encodeURIComponent(id),
+        { method: "POST", headers: hdr(true), body: JSON.stringify({ reason }) }
+      );
+      if (!res.ok) { alert("Action failed (" + res.status + "): " + (await res.text())); return; }
+      const el = document.getElementById("card-" + id);
+      if (el) el.remove();
+    }
+
+    function showLog(msg, isErr) {
+      document.getElementById("list").innerHTML =
+        "<p class='" + (isErr ? "err" : "status") + "'>" + escapeHtml(msg) + "</p>";
+    }
+
+    function escapeHtml(s) {
+      return String(s == null ? "" : s).replace(/[&<>"']/g, c =>
+        ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+    }
+
+    // If a token already exists, try to go straight to tenants.
+    if (TOKEN) { document.getElementById("loginCard").style.display = "none"; loadTenants(); }
+  </script>
+</body>
+</html>

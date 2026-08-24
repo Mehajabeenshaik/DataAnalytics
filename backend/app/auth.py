@@ -215,6 +215,20 @@ async def spa():
     return FileResponse(str(app_path))
 
 
+@app.get("/admin", response_class=HTMLResponse)
+async def admin_ui():
+    """Serve the metric-approval admin console (frontend/app/admin.html).
+
+    The page itself talks to the admin API below (requires an admin JWT, so
+    the HTML is public but every data call is role-gated).
+    """
+    app_path = Path(__file__).resolve().parents[2] / "frontend" / "app" / "admin.html"
+    if not app_path.exists():
+        return HTMLResponse("<h1>Admin UI not built</h1>", status_code=404)
+    return FileResponse(str(app_path))
+
+
+
 @app.post("/auth/login", response_model=Token)
 async def login(form_data: OAuth2PasswordRequestForm = Depends()):
     user = _authenticate(form_data.username, form_data.password)

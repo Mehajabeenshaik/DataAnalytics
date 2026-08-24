@@ -114,6 +114,59 @@ async def approve_proposal(
     return {"status": "approved", "metric": metric.name, "proposal_id": proposal_id}
 
 
+@admin_router.post("/tenants/{tenant_id}/catalog/reject/{proposal_id}")
+async def reject_proposal(
+    tenant_id: str,
+    proposal_id: str,
+    payload: dict | None = None,
+    user: UserOut = Depends(require_admin),
+):
+    """Reject a pending metric proposal. It never enters the approved catalog."""
+    _resolve_tenant_access(tenant_id, user)
+    svc = CatalogService(tenant_id=tenant_id)
+    reason = (payload or {}).get("reason") or None
+    try:
+        svc.reject(
+            proposal_id,
+            rejected_by=user.username,
+            reason=reason or "Rejected by admin",
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"status": "rejected", "proposal_id": proposal_id}
+
+
+@admin_router.get("/tenants/{tenant_id}/catalog/pending")
+async def pending_proposals(tenant_id: str, user: UserOut = Depends(require_admin)):
+    """Rich view of pending metric proposals for the approval UI."""
+    _resolve_tenant_access(tenant_id, user)
+    svc = CatalogService(tenant_id=tenant_id)
+    pending = svc.list_pending()
+    return {
+        "tenant_id": tenant_id,
+        "pending": [
+            {
+                "proposal_id": p.proposal_id,
+                "metric": {
+                    "name": p.metric.name,
+                    "description": p.metric.description,
+                    "column": p.metric.column,
+                    "agg": p.metric.agg,
+                    "groupby": p.metric.groupby,
+                    "base_filters": p.metric.base_filters,
+                    "synonyms": p.metric.synonyms,
+                },
+                "question": p.question,
+                "reason": p.reason,
+                "proposed_by": p.proposed_by,
+                "status": p.status,
+                "proposed_at": p.proposed_at.isoformat() if p.proposed_at else None,
+            }
+            for p in pending
+        ],
+    }
+
+
 @admin_router.get("/tenants/{tenant_id}/audit/export")
 async def tenant_audit_export(
     tenant_id: str,
