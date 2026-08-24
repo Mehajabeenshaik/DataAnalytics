@@ -46,6 +46,12 @@ running governed analytics in front of real customers or a security review.
 
 - [ ] Rotate and manage widget API keys via admin endpoints, not hardcoded
       demo keys.
+- [ ] **Rotate or disable the demo API key.** `DEMO_API_KEY`
+      (default `ak_demo_key_12345`) is seeded into the tenant store and
+      embedded on the local demo pages for the 5-minute try path. It is a
+      known public value — never let it reach production traffic. Set
+      `DEMO_API_KEY` to a private value for pilots and create real tenant
+      keys via the admin API.
 - [ ] Wire real OIDC (Okta / Entra / Auth0 / Descope) — see `docs/SSO.md`.
       Until then OIDC routes return 501 with explicit guidance.
 - [ ] Enforce admin-only access to `/admin/*`, `/auth/register`, and metric

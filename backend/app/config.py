@@ -90,6 +90,12 @@ OIDC_REDIRECT_URI = os.getenv("OIDC_REDIRECT_URI", "")
 # Python logging level: DEBUG | INFO | WARNING | ERROR
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 
+# ── Demo API key ──────────────────────────────────────────────────────────
+# Seeded into the tenant store and embedded on the local demo pages so the
+# 5-minute try path works out of the box. Override via env for pilots, and
+# rotate/disable it in production (see PRODUCTION.md).
+DEMO_API_KEY = os.getenv("DEMO_API_KEY", "ak_demo_key_12345")
+
 # ── CORS hardening ────────────────────────────────────────────────────────
 # Comma-separated allowlist of browser/embed origins. "*" (the default) is
 # for local dev only — restrict it in production (see PRODUCTION.md). When

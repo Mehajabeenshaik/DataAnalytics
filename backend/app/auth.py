@@ -20,6 +20,7 @@ from config import (
     LOG_LEVEL,
     CORS_ORIGINS,
     CORS_ALLOW_ALL,
+    DEMO_API_KEY,
 )
 
 
@@ -273,13 +274,13 @@ async def root():
 
         <!-- Chat bot widget — loads immediately on this page -->
         <script
-          src="/widget/widget.js"
-          data-api-key="ak_demo_key_12345"
-          data-api-url=""
-          data-theme-color="#7c5cfc"></script>
+      src="/widget/widget.js"
+      data-api-key="__DEMO_API_KEY__"
+      data-api-url=""
+      data-theme-color="#7c5cfc"></script>
     </body>
     </html>
-    """
+    """.replace("__DEMO_API_KEY__", DEMO_API_KEY)
 
 
 @app.get("/app", response_class=HTMLResponse)

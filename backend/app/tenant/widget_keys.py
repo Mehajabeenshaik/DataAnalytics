@@ -66,6 +66,8 @@ def _get_db() -> sqlite3.Connection:
 
 def init_tenant_db() -> None:
     """Create the tenants table if it doesn't exist and seed the demo key."""
+    from config import DEMO_API_KEY
+
     conn = _get_db()
     conn.executescript(TENANT_SCHEMA)
     now = datetime.now(timezone.utc).isoformat()
@@ -74,7 +76,7 @@ def init_tenant_db() -> None:
         "(api_key, company_name, settings, allowed_domains, created_at, is_active) "
         "VALUES (?, ?, ?, ?, ?, 1)",
         (
-            "ak_demo_key_12345",
+            DEMO_API_KEY,
             "Demo Company",
             json.dumps({"theme_color": "#7c5cfc"}),
             json.dumps(["localhost", "127.0.0.1"]),
