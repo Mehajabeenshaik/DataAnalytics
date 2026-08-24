@@ -9,7 +9,6 @@ MAX_POINTS = 50
 
 def build_chart_spec(step: dict) -> dict | None:
     result = step.get("result")
-    action = (step.get("action") or "").lower()
     target = (step.get("target") or "").lower()
 
     if result is None:

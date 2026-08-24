@@ -14,7 +14,6 @@ the `use <name>` command. Example:
     > What is total revenue?
 """
 import os
-import sys
 
 from dotenv import load_dotenv
 load_dotenv()
@@ -23,7 +22,6 @@ from data_source import DataSource
 from dataset_registry import DatasetRegistry
 from agent_phase2 import ask
 from llm_provider import get_provider
-from config import LLM_PROVIDER
 from catalog.service import CatalogService
 from metric_factory import merge_auto_metrics_into_catalog
 
@@ -69,7 +67,7 @@ def run_demo():
     registry = DatasetRegistry()
 
     print(f"{'='*60}")
-    print(f"  DataAnalytics — Governed Agent CLI Demo")
+    print("  DataAnalytics — Governed Agent CLI Demo")
     print(f"  Provider: {provider.provider_name()}")
     print(f"{'='*60}")
     print()

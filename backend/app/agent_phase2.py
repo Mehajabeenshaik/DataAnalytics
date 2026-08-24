@@ -19,18 +19,21 @@ Safety model is fully preserved:
 from __future__ import annotations
 
 import json
+import logging
 import re
 from typing import Any
 
 import pandas as pd
 from pydantic import BaseModel, ValidationError
 
+_log = logging.getLogger("daana.agent")
+
 from data_source import DataSource
 from metric_factory import get_metric_catalog_for_llm
 from agent_core import run_metric
 from stats_tools import ALLOWED_STATS_TOOLS, VALID_TOOL_NAMES, run_stats_tool
 from llm_provider import LLMProvider
-from cache import get_cached_response, set_cached_response, clear_cache
+from cache import get_cached_response, set_cached_response
 from catalog.service import CatalogService
 from catalog.models import MetricDefinition as CatalogMetricDefinition
 from catalog.models import MetricProposal as CatalogMetricProposal
@@ -1533,6 +1536,7 @@ def ask(
 
     except QuotaExceededError as e:
         error = "quota_exceeded"
+        _log.warning("Quota exceeded during ask(): %s", e)
         raise
 
     except ResourceLimitError as e:
@@ -1699,6 +1703,7 @@ def ask_stream(
 
     except QuotaExceededError as e:
         error = "quota_exceeded"
+        _log.warning("Quota exceeded during ask_stream(): %s", e)
         raise
 
     except ResourceLimitError as e:

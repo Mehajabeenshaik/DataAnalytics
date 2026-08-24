@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import time
 from collections import OrderedDict, deque
-from typing import Any
 
 MAX_TURNS_PER_SESSION = 5
 MAX_ACTIVE_SESSIONS = 500

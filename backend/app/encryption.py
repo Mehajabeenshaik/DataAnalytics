@@ -1,7 +1,5 @@
 import os
 import tempfile
-import sqlite3
-from pathlib import Path
 from cryptography.fernet import Fernet
 from config import DB_ENCRYPTION_KEY, BASE_DIR
 

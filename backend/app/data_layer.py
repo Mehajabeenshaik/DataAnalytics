@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from config import BASE_DIR, DB_PATH
+from config import DB_PATH
 
 
 # ---------------------------------------------------------------------------

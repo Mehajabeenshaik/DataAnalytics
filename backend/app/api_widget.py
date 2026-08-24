@@ -13,7 +13,6 @@ import uuid
 import traceback
 import tempfile
 from pathlib import Path
-from typing import Any
 
 import pandas as pd
 from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, Form
@@ -25,7 +24,7 @@ from tenant import validate_api_key, WidgetTenant as Tenant
 from session_manager import SessionManager
 from data_source import DataSource
 from dataset_registry import DatasetRegistry
-from llm_provider import get_provider
+from llm_provider import FallbackLLMProvider, get_provider
 from tenant_quotas import QuotaExceededError
 from resource_limits import ResourceLimitError
 import agent_phase2

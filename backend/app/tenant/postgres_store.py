@@ -10,7 +10,6 @@ Schema is bootstrapped automatically on first connection via bootstrap_schema().
 
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from .models import Org, Tenant, User, Membership
@@ -86,8 +85,11 @@ class PostgresTenantStore:
 
     @staticmethod
     def _ensure_psycopg2() -> None:
+        # Availability probe: raise a friendly error instead of a raw
+        # ImportError deep inside connect(). __import__ keeps pyflakes quiet
+        # because the module is deliberately not bound for use here.
         try:
-            import psycopg2  # noqa: F401
+            __import__("psycopg2")
         except ImportError as exc:
             raise ImportError(
                 "psycopg2 is required for TENANT_STORE=postgres. "

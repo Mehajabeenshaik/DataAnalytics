@@ -8,7 +8,6 @@ from __future__ import annotations
 import json
 from typing import Any
 
-import pandas as pd
 from pydantic import BaseModel, ValidationError
 
 from data_source import DataSource

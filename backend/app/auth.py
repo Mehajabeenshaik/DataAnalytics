@@ -341,11 +341,9 @@ async def get_me(user: UserOut = Depends(get_current_user)):
 #      and issue our own short-lived JWT carrying tenant_id + roles.
 #   3. POST /auth/token → exchange an IdP-issued token for our JWT.
 #
-# The actual IdP HTTP calls are intentionally NOT hardcoded — drop in your
-# provider's SDK (e.g. authlib, python-jose, or the WorkOS/Descope SDKs)
-# at the marked integration points below.
-from fastapi.responses import RedirectResponse
-from config import OIDC_ENABLED, OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET, OIDC_REDIRECT_URI
+# The actual IdP flow lives in auth_oidc.py (authlib-based). Only the
+# enabled flag is needed here for the disabled-mode 501 responses.
+from config import OIDC_ENABLED
 
 
 @app.get("/auth/login/sso")

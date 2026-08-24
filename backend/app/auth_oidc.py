@@ -165,7 +165,7 @@ def make_state(nonce: str) -> str:
 
 
 def read_state(state: str | None) -> dict[str, Any]:
-    from config import JWT_ALGORITHM, JWT_SECRET_KEY
+    from config import JWT_SECRET_KEY
 
     if not state:
         raise OIDCError("missing state")
