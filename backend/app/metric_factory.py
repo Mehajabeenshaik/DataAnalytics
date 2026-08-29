@@ -246,4 +246,4 @@ def merge_auto_metrics_into_catalog(
     Returns:
         The number of metrics seeded (0 if the catalog was already populated).
     """
-    return catalog_service.seed_from_datasource(ds, created_by=created_by)
+    return catalog_service.seed_from_datasource(ds, created_by=created_by, force=True)

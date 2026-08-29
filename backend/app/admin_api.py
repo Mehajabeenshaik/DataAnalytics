@@ -8,6 +8,10 @@ No cross-tenant access even for admins of a different org.
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException
+import os
+import shutil
+from datetime import datetime
+from pathlib import Path
 
 from .auth import UserOut, require_admin
 from tenant.service import TenantService
@@ -194,3 +198,45 @@ async def tenant_audit_export(
             headers={"Content-Disposition": f'attachment; filename="audit_{tenant_id}.csv"'},
         )
     return {"tenant_id": tenant_id, "days": days, "records": logs}
+
+@admin_router.post("/tenants/{tenant_id}/catalog/reset")
+async def reset_catalog_endpoint(
+    tenant_id: str,
+    token: str | None = None,
+    user: UserOut = Depends(require_admin),
+):
+    """Reset the approved catalog for a tenant.
+
+    Protected by a secret token supplied via the ``ADMIN_RESET_TOKEN``
+    environment variable. The endpoint backs up the existing catalog
+    (metrics.yaml and history) before deleting them.
+    """
+    expected = os.getenv("ADMIN_RESET_TOKEN")
+    if not expected or token != expected:
+        raise HTTPException(status_code=401, detail="Invalid admin reset token")
+    # Resolve paths used by CatalogService
+    from catalog.service import CatalogService
+    svc = CatalogService(tenant_id=tenant_id)
+    root = svc.store.root
+    backup_dir = root.parent / "backup"
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.utcnow().strftime("%Y%m%dT%H%M%SZ")
+    # Backup current metrics.yaml
+    current_metrics = root / "current" / "metrics.yaml"
+    if current_metrics.exists():
+        shutil.copy2(current_metrics, backup_dir / f"metrics_{timestamp}.yaml")
+    # Backup history folder
+    history_dir = root / "history"
+    if history_dir.exists():
+        dest = backup_dir / f"history_{timestamp}"
+        shutil.copytree(history_dir, dest)
+    # Delete current and history
+    if current_metrics.parent.exists():
+        shutil.rmtree(current_metrics.parent)
+    if history_dir.exists():
+        shutil.rmtree(history_dir)
+    # Recreate empty structure
+    (root / "current").mkdir(parents=True, exist_ok=True)
+    (root / "proposals").mkdir(parents=True, exist_ok=True)
+    (root / "history").mkdir(parents=True, exist_ok=True)
+    return {"status": "reset", "tenant_id": tenant_id, "backup": str(backup_dir)}

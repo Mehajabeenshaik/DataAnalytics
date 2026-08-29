@@ -86,20 +86,39 @@ class CatalogService:
 
     # ── Seeding ───────────────────────────────────────────────────────────
 
+    def _is_auto_only_catalog(self, catalog: dict[str, MetricDefinition]) -> bool:
+        """Check if the catalog contains only system auto-generated metrics."""
+        if not catalog:
+            return False
+        for m in catalog.values():
+            if not (
+                m.source == "auto"
+                and m.status == "approved"
+                and m.created_by == "system"
+            ):
+                return False
+        return True
+
     def seed_from_datasource(
         self,
         ds: DataSource,
         created_by: str = "system",
+        force: bool = False,
     ) -> int:
         """On first load, turn auto-generated metrics into approved catalog
-        entries (source="auto"). Never overwrites an existing catalog.
+        entries (source="auto"). Never overwrites an existing catalog unless
+        ``force`` is ``True`` and the existing catalog contains **only** auto-
+        generated metrics (source=="auto", status=="approved", created_by=="system").
 
         Returns the number of metrics seeded (0 if the catalog already had
-        content).
-        """
+        content and ``force`` is not applicable)."""
+
         existing = self.store.load_approved()
         if existing:
-            return 0  # never overwrite human-approved / previously seeded metrics
+            if force and self._is_auto_only_catalog(existing):
+                pass  # allow reseed
+            else:
+                return 0  # do not overwrite human-approved or mixed catalog
 
         auto = generate_metrics(ds)
         metrics: dict[str, MetricDefinition] = {}
