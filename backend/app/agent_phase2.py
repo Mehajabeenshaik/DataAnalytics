@@ -347,6 +347,9 @@ def plan(
     try:
         data = json.loads(raw)
         the_plan = Plan(**data)
+        # Log planner result for debugging
+        logger = logging.getLogger("agent_phase2")
+        logger.debug("Planner produced plan_type=%s reason=%s", the_plan.plan_type, the_plan.reason)
     except (json.JSONDecodeError, ValidationError):
         return Plan(can_answer=False, reason="Malformed planner response", plan_type="no_match")
 

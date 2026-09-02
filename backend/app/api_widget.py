@@ -9,6 +9,8 @@ where end users don't log in — the API key identifies the company.
 from __future__ import annotations
 
 import json
+import logging
+logging.basicConfig(level=logging.DEBUG)
 import uuid
 import traceback
 import tempfile
@@ -48,6 +50,7 @@ _WIDGET_DIR = Path(__file__).resolve().parents[2] / "frontend" / "embed"
 
 async def require_tenant(x_api_key: str = Header(...)) -> Tenant:
     """Validate X-API-Key header and return the Tenant."""
+
     tenant = validate_api_key(x_api_key)
     if not tenant:
         raise HTTPException(status_code=401, detail="Invalid or revoked API key")
@@ -433,6 +436,13 @@ def _resolve_widget_session(req: AskRequest, tenant: Tenant) -> dict:
     if session["tenant_key"] != tenant.api_key:
         raise HTTPException(status_code=403, detail="Session does not belong to this API key")
 
+    # Log session diagnostics
+    logger = logging.getLogger("api_widget")
+    logger.debug("Resolving session %s for tenant %s", req.session_id, tenant.api_key)
+    logger.debug("Session registry size: %d", len(session["registry"]))
+    logger.debug("Available datasets: %s", list(session["registry"].list_names()))
+    logger.debug("Default dataset: %s", session["registry"].default_name)
+
     if len(session["registry"]) == 0:
         raise HTTPException(status_code=400, detail="No data uploaded in this session yet")
 
@@ -452,6 +462,15 @@ async def ask_question(
         provider = get_provider()
         registry: DatasetRegistry = session["registry"]
         ds = registry.get(req.dataset)
+        # Log dataset and profile info
+        logger = logging.getLogger("api_widget")
+        logger.debug("Ask question: %s", req.question)
+        logger.debug("Requested dataset: %s (resolved to: %s)", req.dataset, ds.name if ds else 'None')
+        if ds and ds.profile:
+            logger.debug("Data profile rows: %s, cols: %s", ds.profile.n_rows, ds.profile.n_cols)
+        else:
+            logger.debug("No profile available for dataset")
+        logger.debug("Metric keys (first 20): %s", list(ds.get_metrics().keys())[:20] if ds else [])
         # tenant_id = the API key (existing isolation boundary for the widget)
         result = agent_phase2.ask(
             req.question,
