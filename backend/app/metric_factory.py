@@ -42,7 +42,10 @@ def _build_synonyms(column: str, agg: str) -> list[str]:
         synonyms += [f"{word} {col_l}", f"maximum {col_l}" if agg == "max" else f"minimum {col_l}"]
 
     elif agg == "count":
-        synonyms += [f"number of {col_l}", f"{col_l} count", f"count of {col_l}"]
+        synonyms += [
+            f"number of {col_l}", f"{col_l} count", f"count of {col_l}",
+            f"how many {col_l}", f"total {col_l}",
+        ]
 
     return list(dict.fromkeys(synonyms))
 
@@ -88,13 +91,15 @@ def generate_metrics(ds: DataSource) -> dict:
     cat_cols = [c for c in profile.columns if c.is_categorical]
     id_like = [c for c in profile.columns if "id" in c.name.lower()]
 
+    # ------------------------------------------------------------------
     # 1. Global statistics for every numeric column (sum, mean, min, max)
-    # Skip id-like columns — summing an order_id is meaningless and pollutes
-    # the catalog with bogus "total_order_id" metrics that confuse the planner.
+    # ------------------------------------------------------------------
     for col in numeric_cols:
         if _is_id_like(col.name):
             continue
         col_clean = col.name.replace(" ", "_")
+
+        # SUM
         name_sum = f"total_{col_clean}"
         metrics[name_sum] = {
             "synonyms": _build_synonyms(col.name, "sum"),
@@ -105,6 +110,7 @@ def generate_metrics(ds: DataSource) -> dict:
             "base_filters": {},
         }
 
+        # MEAN
         name_avg = f"avg_{col_clean}"
         metrics[name_avg] = {
             "synonyms": _build_synonyms(col.name, "mean"),
@@ -115,8 +121,8 @@ def generate_metrics(ds: DataSource) -> dict:
             "base_filters": {},
         }
 
-        name_max = f"max_{col_clean}"
-        metrics[name_max] = {
+        # MAX / MIN
+        metrics[f"max_{col_clean}"] = {
             "synonyms": _build_synonyms(col.name, "max"),
             "description": f"Maximum value of {col.name}.",
             "column": col.name,
@@ -124,9 +130,7 @@ def generate_metrics(ds: DataSource) -> dict:
             "groupby": None,
             "base_filters": {},
         }
-
-        name_min = f"min_{col_clean}"
-        metrics[name_min] = {
+        metrics[f"min_{col_clean}"] = {
             "synonyms": _build_synonyms(col.name, "min"),
             "description": f"Minimum value of {col.name}.",
             "column": col.name,
@@ -135,11 +139,14 @@ def generate_metrics(ds: DataSource) -> dict:
             "base_filters": {},
         }
 
-    # 2. Row count
+    # ------------------------------------------------------------------
+    # 2. Row count (always useful)
+    # ------------------------------------------------------------------
     metrics["row_count"] = {
         "synonyms": [
             "how many rows", "row count", "number of rows",
             "how many records", "dataset size", "total rows",
+            "number of records", "total records",
         ],
         "description": "Total number of rows in the table.",
         "column": "*",
@@ -148,11 +155,35 @@ def generate_metrics(ds: DataSource) -> dict:
         "base_filters": {},
     }
 
-    # 3. Distinct counts for ID-like or high-cardinality categoricals
-    for col in id_like + [c for c in cat_cols if c.n_unique and c.n_unique > 5]:
+    # ------------------------------------------------------------------
+    # 3. Smart "order_count" / "customer_count" style metrics
+    # ------------------------------------------------------------------
+    # Look for common order / transaction / customer identifiers
+    order_candidates = [
+        c for c in profile.columns
+        if any(kw in c.name.lower() for kw in ("order", "transaction", "invoice", "ticket", "sale_id"))
+    ]
+    customer_candidates = [
+        c for c in profile.columns
+        if any(kw in c.name.lower() for kw in ("customer", "client", "user", "account"))
+    ]
+
+    for col in order_candidates:
         col_clean = col.name.replace(" ", "_")
-        name = f"unique_{col_clean}"
-        metrics[name] = {
+        metrics["order_count"] = {
+            "synonyms": [
+                "order count", "number of orders", "how many orders",
+                "total orders", "count of orders", "orders received",
+                "how many orders have we received", "total number of orders",
+            ],
+            "description": f"Total number of unique orders (distinct {col.name}).",
+            "column": col.name,
+            "agg": "nunique",
+            "groupby": None,
+            "base_filters": {},
+        }
+        # Also keep the generic unique_ version
+        metrics[f"unique_{col_clean}"] = {
             "synonyms": _suggest_synonyms(col.name, "count") + [f"distinct {col.name}"],
             "description": f"Number of unique values in {col.name}.",
             "column": col.name,
@@ -161,15 +192,70 @@ def generate_metrics(ds: DataSource) -> dict:
             "base_filters": {},
         }
 
-    # 4. Comprehensive Breakdowns: numeric × categorical
+    for col in customer_candidates:
+        col_clean = col.name.replace(" ", "_")
+        metrics["customer_count"] = {
+            "synonyms": [
+                "customer count", "number of customers", "how many customers",
+                "total customers", "unique customers", "count of customers",
+            ],
+            "description": f"Total number of unique customers (distinct {col.name}).",
+            "column": col.name,
+            "agg": "nunique",
+            "groupby": None,
+            "base_filters": {},
+        }
+
+    # ------------------------------------------------------------------
+    # 4. Average Order Value (AOV) – high business value metric
+    # ------------------------------------------------------------------
+    revenue_cols = [
+        c for c in numeric_cols
+        if any(kw in c.name.lower() for kw in ("revenue", "sales", "amount", "total", "price", "value"))
+        and not _is_id_like(c.name)
+    ]
+    if revenue_cols and order_candidates:
+        rev_col = revenue_cols[0].name
+        metrics["average_order_value"] = {
+            "synonyms": [
+                "average order value", "aov", "avg order value",
+                "mean order value", "average order amount",
+                "what is the average order value", "avg order amount",
+            ],
+            "description": f"Average order value (mean of {rev_col}).",
+            "column": rev_col,
+            "agg": "mean",
+            "groupby": None,
+            "base_filters": {},
+        }
+
+    # ------------------------------------------------------------------
+    # 5. Distinct counts for remaining ID-like / high-cardinality columns
+    # ------------------------------------------------------------------
+    for col in id_like + [c for c in cat_cols if c.n_unique and c.n_unique > 5]:
+        col_clean = col.name.replace(" ", "_")
+        name = f"unique_{col_clean}"
+        if name not in metrics:          # don't overwrite order_count etc.
+            metrics[name] = {
+                "synonyms": _suggest_synonyms(col.name, "count") + [f"distinct {col.name}"],
+                "description": f"Number of unique values in {col.name}.",
+                "column": col.name,
+                "agg": "nunique",
+                "groupby": None,
+                "base_filters": {},
+            }
+
+    # ------------------------------------------------------------------
+    # 6. Numeric × Categorical breakdowns
+    # ------------------------------------------------------------------
     for num in numeric_cols:
+        if _is_id_like(num.name):
+            continue
         num_clean = num.name.replace(" ", "_")
         for cat in cat_cols:
             cat_clean = cat.name.replace(" ", "_")
 
-            # Sum by group
-            name_sum = f"{num_clean}_by_{cat_clean}"
-            metrics[name_sum] = {
+            metrics[f"{num_clean}_by_{cat_clean}"] = {
                 "synonyms": [
                     f"{num.name} by {cat.name}",
                     f"{num.name} per {cat.name}",
@@ -183,9 +269,7 @@ def generate_metrics(ds: DataSource) -> dict:
                 "base_filters": {},
             }
 
-            # Average by group
-            name_avg = f"avg_{num_clean}_by_{cat_clean}"
-            metrics[name_avg] = {
+            metrics[f"avg_{num_clean}_by_{cat_clean}"] = {
                 "synonyms": [
                     f"average {num.name} by {cat.name}",
                     f"avg {num.name} per {cat.name}",
@@ -198,12 +282,19 @@ def generate_metrics(ds: DataSource) -> dict:
                 "base_filters": {},
             }
 
-    # 5. Categorical counts by group
+    # ------------------------------------------------------------------
+    # 7. Categorical counts / distributions
+    # ------------------------------------------------------------------
     for cat in cat_cols:
         cat_clean = cat.name.replace(" ", "_")
-        name_cnt = f"count_by_{cat_clean}"
-        metrics[name_cnt] = {
-            "synonyms": [f"count by {cat.name}", f"number of items per {cat.name}", f"distribution of {cat.name}"],
+        metrics[f"count_by_{cat_clean}"] = {
+            "synonyms": [
+                f"count by {cat.name}",
+                f"number of items per {cat.name}",
+                f"distribution of {cat.name}",
+                f"value counts for {cat.name}",
+                f"breakdown by {cat.name}",
+            ],
             "description": f"Row count grouped by {cat.name}.",
             "column": "*",
             "agg": "count",

@@ -81,26 +81,26 @@ def _scrub_pii_from_results(results: list[dict]) -> list[dict]:
 
 # ── Prompts ───────────────────────────────────────────────────────────────
 
-PLANNER_SYSTEM = """You are the planning module of a local data analyst agent (Nemotron).
+PLANNER_SYSTEM = """You are the planning module of a governed data analyst agent. Your job is to produce a correct, minimal, and safe execution plan.
 
-Given:
-- The user question
-- The current metric catalog (name, synonyms, description only)
-- The list of allowed statistical tools
-- The schema card (column names + types + examples)
+You receive:
+- User question
+- Metric catalog (name + synonyms + short description only)
+- Allowed statistical tools
+- Schema card (column names, types, examples)
 - Allowed filter columns
+- Approved join policies (if any)
 
-Produce a plan in STRICT JSON only:
-
+### Output format (STRICT JSON only)
 {
   "can_answer": true | false,
-  "reason": "short explanation",
+  "reason": "short explanation of your decision",
   "plan_type": "single_metric" | "stats_tool" | "multi_step" | "joined_metric" | "propose_metric" | "no_match",
   "steps": [
     {
       "step_id": 1,
       "action": "run_metric" | "run_stats",
-      "target": "<metric_name or tool_name>",
+      "target": "<exact metric_name or tool_name>",
       "filters": {"column": "value"},
       "args": {},
       "join_policy_name": "<approved join policy name or null>"
@@ -108,73 +108,234 @@ Produce a plan in STRICT JSON only:
   ]
 }
 
-Rules:
-- Maximum 3 steps.
-- Only use metric names that appear in the catalog.
-- Only use tool names from the allowed tools list: describe, value_counts, correlation, group_compare, missingness, trend, anomaly_detect, filtered_agg.
-- For a named calendar month (e.g. "total sales in January"), use target="filtered_agg" with value_col, date_col, month (1-12), and agg. Never answer a month question with an unfiltered total.
-- For questions comparing totals/means across categories (e.g. "highest sales by region", "sales per region"), use plan_type="stats_tool", action="run_stats", target="group_compare", args={"value_col": "<numeric_col>", "group_col": "<cat_col>", "agg": "sum"}.
-- For questions that need data from two tables joined together, use plan_type="joined_metric" and set join_policy_name to one of the approved join policy names listed in context. Never invent a join_policy_name — only use the approved ones provided.
-- Filters may only use columns from the allowed filter list.
-- If the question needs a calculation that does not exist yet, use plan_type = "propose_metric".
-- Output ONLY valid JSON. No markdown, no extra text.
+### Hard Rules (never violate)
+1. Maximum 3 steps.
+2. target MUST be an exact name from the metric catalog OR from the allowed tools list.
+3. Never invent metric names, tool names, columns, or join policies.
+4. Filters may only use columns from the allowed filter list.
+5. For calendar-month questions (e.g. "sales in January") → use tool "filtered_agg" with proper month argument. Never return an unfiltered total.
+6. For "by category / by region / highest / lowest / compare groups" questions → use tool "group_compare".
+7. For distribution / value counts / frequency questions → prefer tool "value_counts" (or a count_by_* metric if one exists).
+8. For trends / over time / monthly pattern questions → use tool "trend".
+9. For questions requiring two tables → only use an approved join_policy_name. Never invent joins.
+10. If no existing metric or tool can correctly answer → set plan_type = "propose_metric" or "no_match".
+11. Prefer the simplest plan that is correct. Do not over-plan.
+12. Output ONLY valid JSON. No markdown, no commentary.
+
+### Few-shot examples (study these carefully)
+
+Example 1 – Distribution / value counts
+Question: "Distribution of categories"
+→ {
+  "can_answer": true,
+  "reason": "User wants frequency distribution of a categorical column",
+  "plan_type": "stats_tool",
+  "steps": [
+    {
+      "step_id": 1,
+      "action": "run_stats",
+      "target": "value_counts",
+      "filters": {},
+      "args": {"column": "category"},
+      "join_policy_name": null
+    }
+  ]
+}
+
+Example 2 – Trends over time
+Question: "Show me trends over time"
+→ {
+  "can_answer": true,
+  "reason": "User is asking for a time-based trend of a numeric measure",
+  "plan_type": "stats_tool",
+  "steps": [
+    {
+      "step_id": 1,
+      "action": "run_stats",
+      "target": "trend",
+      "filters": {},
+      "args": {"value_col": "revenue", "date_col": "order_date"},
+      "join_policy_name": null
+    }
+  ]
+}
+
+Example 3 – Value counts with explicit column
+Question: "Show me value counts for region"
+→ {
+  "can_answer": true,
+  "reason": "Direct request for value counts on region",
+  "plan_type": "stats_tool",
+  "steps": [
+    {
+      "step_id": 1,
+      "action": "run_stats",
+      "target": "value_counts",
+      "filters": {},
+      "args": {"column": "region"},
+      "join_policy_name": null
+    }
+  ]
+}
+
+Example 4 – Group comparison
+Question: "Which region has the highest sales?"
+→ {
+  "can_answer": true,
+  "reason": "Comparison of a numeric measure across a categorical column",
+  "plan_type": "stats_tool",
+  "steps": [
+    {
+      "step_id": 1,
+      "action": "run_stats",
+      "target": "group_compare",
+      "filters": {},
+      "args": {"value_col": "sales", "group_col": "region", "agg": "sum"},
+      "join_policy_name": null
+    }
+  ]
+}
+
+Example 5 – Simple metric match
+Question: "What is total revenue?"
+→ {
+  "can_answer": true,
+  "reason": "Exact match to total_revenue metric",
+  "plan_type": "single_metric",
+  "steps": [
+    {
+      "step_id": 1,
+      "action": "run_metric",
+      "target": "total_revenue",
+      "filters": {},
+      "args": {},
+      "join_policy_name": null
+    }
+  ]
+}
+
+Example 6 – Month filter
+Question: "Show me sales in January"
+→ {
+  "can_answer": true,
+  "reason": "Time-filtered aggregation required",
+  "plan_type": "stats_tool",
+  "steps": [
+    {
+      "step_id": 1,
+      "action": "run_stats",
+      "target": "filtered_agg",
+      "filters": {},
+      "args": {"value_col": "sales", "date_col": "order_date", "month": 1, "agg": "sum"},
+      "join_policy_name": null
+    }
+  ]
+}
+
+Example 7 – Ambiguous distribution wording
+Question: "How are the categories distributed?"
+→ {
+  "can_answer": true,
+  "reason": "Distribution request → value_counts",
+  "plan_type": "stats_tool",
+  "steps": [
+    {
+      "step_id": 1,
+      "action": "run_stats",
+      "target": "value_counts",
+      "filters": {},
+      "args": {"column": "category"},
+      "join_policy_name": null
+    }
+  ]
+}
+
+Example 8 – Trend with different wording
+Question: "What is the monthly trend of revenue?"
+→ {
+  "can_answer": true,
+  "reason": "Explicit monthly trend request",
+  "plan_type": "stats_tool",
+  "steps": [
+    {
+      "step_id": 1,
+      "action": "run_stats",
+      "target": "trend",
+      "filters": {},
+      "args": {"value_col": "revenue", "date_col": "order_date"},
+      "join_policy_name": null
+    }
+  ]
+}
+
+### Accuracy Decision Tree
+- Can one existing metric answer it? → single_metric
+- Needs grouping / comparison / highest / lowest? → group_compare
+- Needs frequency / distribution / value counts? → value_counts
+- Needs trend / over time / monthly pattern? → trend
+- Needs sequential calculations? → multi_step (max 3)
+- Needs data from two approved tables? → joined_metric
+- Metric does not exist yet but is safe to propose? → propose_metric
+- Otherwise → no_match
+
+Be conservative. A wrong answer is worse than "I cannot answer this yet".
 """
 
 
-PROPOSE_METRIC_SYSTEM = """You are proposing a new governed metric for a local data analyst system.
+PROPOSE_METRIC_SYSTEM = """You are proposing a new governed metric for a safety-critical analytics system.
 
-The user asked a question that cannot be answered by the current metric catalog.
-Propose ONE new metric that would answer it, using only columns that exist in the schema.
+The current catalog cannot answer the user question. Propose ONE safe, simple metric that would answer it.
 
-Output STRICT JSON only:
+### Constraints
+- Use ONLY columns that exist in the schema.
+- Aggregation must be one of: sum, mean, count, nunique, max, min.
+- Keep the metric simple and auditable.
+- Never propose complex expressions, window functions, or multi-column formulas in Phase 1.
+- Prefer metrics that are reusable across many questions.
+
+### Output (STRICT JSON)
 {
   "can_propose": true,
   "proposed_name": "snake_case_name",
-  "synonyms": ["...", "..."],
-  "description": "One clear sentence describing what this metric measures",
-  "column": "<existing column name>",
+  "synonyms": ["common phrase 1", "common phrase 2"],
+  "description": "One clear sentence of what this metric measures",
+  "column": "<existing column>",
   "agg": "sum" | "mean" | "count" | "nunique" | "max" | "min",
   "groupby": "<column or null>",
   "base_filters": {},
-  "why_needed": "Short reason this metric is required",
+  "why_needed": "Short reason",
   "risk": "low" | "medium" | "high"
 }
 
-Rules:
-- column and groupby must already exist in the schema.
-- agg must be one of: sum, mean, count, nunique, max, min.
-- Never invent columns or complex expressions.
-- If you cannot propose a safe metric, return:
-  {"can_propose": false, "reason": "..."}
-- Output ONLY valid JSON.
+If you cannot propose a safe metric, return:
+{"can_propose": false, "reason": "..."}
 """
 
 SYNTHESIZER_SYSTEM = """You are a senior data analyst writing the final answer for a business user.
-You are running on Nemotron and must stay strictly grounded in the data.
 
-You receive:
-- The original question
-- The plan that was executed
-- The exact results returned by the tools/metrics
+You receive ONLY the tool/metric results and the original question. You must never invent numbers, metrics, or relationships that are not present in the results.
 
-Write a response in STRICT JSON only:
+### Rules
+1. Base every number strictly on the provided results.
+2. Be precise and concise.
+3. Clearly state the metric or calculation used.
+4. If the result is partial, filtered, or has low sample size → lower the confidence and add a caveat.
+5. Never claim causation unless the data and method support it.
+6. Output ONLY valid JSON.
+
+### Output schema
 {
-  "answer": "Clear, concise plain-English answer. Use only numbers that appear in the results.",
-  "confidence": "high" | "low",
-  "caveats": ["list of important limitations or assumptions"],
-  "lineage": {
-    "metrics_or_tools_used": ["..."],
-    "filters_applied": {},
-    "notes": "row counts or sample size notes if relevant"
-  }
+  "answer": "Clear plain-English answer that directly addresses the question",
+  "confidence": "high" | "medium" | "low",
+  "caveat": "string or null",
+  "key_numbers": ["list of the most important numbers used"],
+  "lineage_summary": "short description of which metric/tool produced the answer"
 }
 
-Rules:
-- Never invent or round numbers beyond what the tools returned.
-- If the result set is small, confidence must be "low".
-- If the question implies causation and the data only shows association, say so in caveats.
-- Keep the answer short and decision-oriented.
-- Output ONLY valid JSON.
+### Confidence guidelines
+- high   → exact metric match, sufficient rows, clear filters
+- medium → reasonable match but some assumptions or limited data
+- low    → small sample, missing filters, indirect metric, or possible misinterpretation
 """
 
 
@@ -436,6 +597,38 @@ def propose_metric(
 
 
 # ── Step 3: Execute (deterministic, no LLM) ──────────────────────────────
+import numpy as np
+from datetime import date, datetime
+from pandas import Timestamp, NaT, Series, DataFrame
+
+def _json_safe(obj):
+    """Recursively convert pandas / numpy / datetime objects into JSON-serializable types."""
+    if obj is None or isinstance(obj, (str, int, float, bool)):
+        return obj
+    if isinstance(obj, (Timestamp, datetime, date)):
+        return None if obj is NaT else obj.isoformat()
+    if isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    if isinstance(obj, (np.floating, np.float64, np.float32)):
+        return None if np.isnan(obj) else float(obj)
+    if isinstance(obj, np.bool_):
+        return bool(obj)
+    if isinstance(obj, np.ndarray):
+        return [_json_safe(x) for x in obj.tolist()]
+    if isinstance(obj, Series):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, DataFrame):
+        return [
+            {str(k): _json_safe(v) for k, v in row.items()}
+            for row in obj.to_dict(orient="records")
+        ]
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, (list, tuple, set)):
+        return [_json_safe(x) for x in obj]
+    # Last resort
+    return str(obj)
+
 
 def _execute_joined_step(
     step: PlanStep,
@@ -488,10 +681,10 @@ def _execute_joined_step(
             metrics = joined_ds.get_metrics()
             metric = metrics[step.target]
             result = run_metric(joined_ds, metric, step.filters)
-            result_entry["result"] = result
+            result_entry["result"] = _json_safe(result)
         elif step.action == "run_stats":
             result = run_stats_tool(joined_ds, step.target, step.args)
-            result_entry["result"] = result
+            result_entry["result"] = _json_safe(result)
     except Exception as e:
         result_entry["error"] = str(e)
 
@@ -540,7 +733,7 @@ def execute_plan(
             if step.action == "run_metric":
                 metric = metrics[step.target]
                 result = run_metric(ds, metric, step.filters)
-                result_entry["result"] = result
+                result_entry["result"] = _json_safe(result)
 
                 # Verification metadata (Phase 6): thread source row counts and
                 # breakdown/total pairs through so verify_answer() can run its
@@ -561,13 +754,13 @@ def execute_plan(
                             f'SELECT SUM("{metric["column"]}") FROM {ds.table_name}{where_sql}',
                             params,
                         ).iloc[0, 0]
-                        result_entry["_breakdown"] = result.to_dict()
+                        result_entry["_breakdown"] = _json_safe(result.to_dict())
                         result_entry["_expected_total"] = float(total or 0)
                 except Exception:
                     pass
             elif step.action == "run_stats":
                 result = run_stats_tool(ds, step.target, step.args)
-                result_entry["result"] = result
+                result_entry["result"] = _json_safe(result)
 
                 # Verification metadata for breakdown-vs-total checks.
                 try:
@@ -576,7 +769,7 @@ def execute_plan(
                         total = ds.query(
                             f'SELECT SUM("{value_col}") FROM {ds.table_name}'
                         ).iloc[0, 0]
-                        result_entry["_breakdown"] = result.to_dict()
+                        result_entry["_breakdown"] = _json_safe(result.to_dict())
                         result_entry["_expected_total"] = float(total or 0)
                     elif step.target == "trend":
                         value_col = step.args["value_col"]
@@ -585,7 +778,7 @@ def execute_plan(
                             f'SELECT SUM("{value_col}") FROM {ds.table_name} '
                             f'WHERE "{date_col}" IS NOT NULL'
                         ).iloc[0, 0]
-                        result_entry["_breakdown"] = result.set_index("period")["value"].to_dict()
+                        result_entry["_breakdown"] = _json_safe(result.set_index("period")["value"].to_dict())
                         result_entry["_expected_total"] = float(total or 0)
                 except Exception:
                     pass
@@ -626,15 +819,7 @@ def _build_synthesize_prompt(
         if r.get("error"):
             entry["error"] = r["error"]
         else:
-            val = r["result"]
-            if isinstance(val, pd.DataFrame):
-                entry["result"] = val.to_dict(orient="records")
-            elif isinstance(val, pd.Series):
-                entry["result"] = val.to_dict()
-            elif isinstance(val, (int, float)):
-                entry["result"] = val
-            else:
-                entry["result"] = str(val)
+            entry["result"] = _json_safe(r["result"])
         serializable_results.append(entry)
 
     prompt = (
@@ -1111,6 +1296,67 @@ def _forced_breakdown(question: str, ds: DataSource) -> "Plan | None":
     )
 
 
+def _forced_distribution(question: str, ds: DataSource) -> "Plan | None":
+    """Deterministic value_counts plan for distribution-style questions."""
+    q = question.lower()
+    if not re.search(r"\b(distribution|value counts|distributed|frequency)\b", q):
+        return None
+    if not ds.profile:
+        return None
+    
+    cat = {c.name.lower(): c.name for c in ds.profile.columns if c.is_categorical}
+    for c_lower, c_real in cat.items():
+        # check if the category name (or its singular form) is in the question
+        if re.search(r"\b" + re.escape(c_lower) + r"\b", q) or re.search(r"\b" + re.escape(c_lower.rstrip("s")) + r"\b", q):
+            return Plan(
+                can_answer=True,
+                reason="deterministic: value_counts",
+                plan_type="stats_tool",
+                steps=[PlanStep(
+                    step_id=1,
+                    action="run_stats",
+                    target="value_counts",
+                    filters={},
+                    args={"column": c_real},
+                )],
+            )
+    return None
+
+
+def _forced_trend(question: str, ds: DataSource) -> "Plan | None":
+    """Deterministic trend plan for time-series-style questions."""
+    q = question.lower()
+    if not re.search(r"\b(trend|trends|over time)\b", q):
+        return None
+    if not ds.profile:
+        return None
+    
+    _, nums, dates = _profile_maps(ds)
+    if not dates:
+        return None
+    
+    date_col = next(iter(dates.values()))
+    value_col = _resolve_value_col(q, nums)
+    if not value_col:
+        value_col = next((n for n in nums.values() if n.lower() in _MONEY), next(iter(nums.values()), None))
+    
+    if not value_col:
+        return None
+        
+    return Plan(
+        can_answer=True,
+        reason="deterministic: trend",
+        plan_type="stats_tool",
+        steps=[PlanStep(
+            step_id=1,
+            action="run_stats",
+            target="trend",
+            filters={},
+            args={"value_col": value_col, "date_col": date_col},
+        )],
+    )
+
+
 def _forced_plan_from_question(question: str, ds: DataSource) -> "Plan | None":
     """Deterministic routes so small LLMs cannot miss obvious analytics intents.
 
@@ -1194,6 +1440,16 @@ def _forced_plan_from_question(question: str, ds: DataSource) -> "Plan | None":
     breakdown_plan = _forced_breakdown(question, ds)
     if breakdown_plan is not None:
         return breakdown_plan
+
+    # distribution of categories
+    dist_plan = _forced_distribution(question, ds)
+    if dist_plan is not None:
+        return dist_plan
+
+    # trends over time
+    trend_plan = _forced_trend(question, ds)
+    if trend_plan is not None:
+        return trend_plan
 
     return None
 
@@ -1535,7 +1791,7 @@ def ask(
                 groupby=(primary_step.args or {}).get("group_col") if primary_step else None,
             )
 
-        return response
+        return _json_safe(response)
 
     except QuotaExceededError as e:
         error = "quota_exceeded"
