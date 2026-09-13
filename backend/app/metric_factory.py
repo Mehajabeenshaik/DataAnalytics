@@ -17,35 +17,51 @@ def _is_id_like(name: str) -> bool:
 def _build_synonyms(column: str, agg: str) -> list[str]:
     col_l = column.lower().replace("_", " ")
     col_clean = column.replace(" ", "_")
+    
+    # Expand flight abbreviations
+    expanded = col_l
+    expanded = expanded.replace("arr delay", "arrival delay")
+    expanded = expanded.replace("dep delay", "departure delay")
+    expanded = expanded.replace("arr del15", "delayed flights")
+    expanded = expanded.replace("dep del15", "delayed departures")
+    
+    bases = [col_l]
+    if expanded != col_l:
+        bases.append(expanded)
+        
     synonyms = []
-
-    if agg == "sum":
-        synonyms += [
-            f"total {col_l}", f"{col_l} total", f"sum of {col_l}",
-            f"how much {col_l}", f"overall {col_l}",
-            f"sum {col_l}", f"total_{col_clean}",
-        ]
-        if any(kw in col_l for kw in ("revenue", "sales", "income", "amount")):
+    
+    for b in bases:
+        if agg == "sum":
             synonyms += [
-                "revenue", "total revenue", "total sales", "sales total",
-                "overall revenue", "overall sales", "sum of sales",
+                f"total {b}", f"{b} total", f"sum of {b}",
+                f"how much {b}", f"overall {b}",
+                f"sum {b}"
+            ]
+            if any(kw in b for kw in ("revenue", "sales", "income", "amount")):
+                synonyms += [
+                    "revenue", "total revenue", "total sales", "sales total",
+                    "overall revenue", "overall sales", "sum of sales",
+                ]
+
+        elif agg == "mean":
+            synonyms += [
+                f"average {b}", f"avg {b}", f"mean {b}",
+                f"typical {b}", f"{b} average",
             ]
 
-    elif agg == "mean":
-        synonyms += [
-            f"average {col_l}", f"avg {col_l}", f"mean {col_l}",
-            f"typical {col_l}", f"{col_l} average",
-        ]
+        elif agg in ("max", "min"):
+            word = "highest" if agg == "max" else "lowest"
+            synonyms += [f"{word} {b}", f"maximum {b}" if agg == "max" else f"minimum {b}"]
 
-    elif agg in ("max", "min"):
-        word = "highest" if agg == "max" else "lowest"
-        synonyms += [f"{word} {col_l}", f"maximum {col_l}" if agg == "max" else f"minimum {col_l}"]
-
-    elif agg == "count":
-        synonyms += [
-            f"number of {col_l}", f"{col_l} count", f"count of {col_l}",
-            f"how many {col_l}", f"total {col_l}",
-        ]
+        elif agg == "count":
+            synonyms += [
+                f"number of {b}", f"{b} count", f"count of {b}",
+                f"how many {b}", f"total {b}",
+            ]
+            
+    if agg == "sum":
+        synonyms.append(f"total_{col_clean}")
 
     return list(dict.fromkeys(synonyms))
 

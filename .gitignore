@@ -36,3 +36,6 @@ data/tenants_data/
 
 # Trust eval generated results (regenerate, don't commit)
 eval/results/
+
+# pytest cache
+.pytest_cache/

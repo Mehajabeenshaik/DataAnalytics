@@ -32,6 +32,12 @@ from data_source import DataSource
 from metric_factory import get_metric_catalog_for_llm
 from agent_core import run_metric
 from stats_tools import ALLOWED_STATS_TOOLS, VALID_TOOL_NAMES, run_stats_tool
+from model_tools import (
+    run_model_tool,
+    get_model_tools_for_llm,
+    VALID_MODEL_TOOL_NAMES,
+    ModelToolResult,
+)
 from llm_provider import LLMProvider
 from cache import get_cached_response, set_cached_response
 from catalog.service import CatalogService
@@ -118,9 +124,11 @@ You receive:
 7. For distribution / value counts / frequency questions → prefer tool "value_counts" (or a count_by_* metric if one exists).
 8. For trends / over time / monthly pattern questions → use tool "trend".
 9. For questions requiring two tables → only use an approved join_policy_name. Never invent joins.
-10. If no existing metric or tool can correctly answer → set plan_type = "propose_metric" or "no_match".
+10. If no perfect metric match exists, prefer using a statistical tool (like 'describe', 'value_counts', or 'group_compare') if it can reasonably answer the question, before falling back to "propose_metric" or "no_match".
 11. Prefer the simplest plan that is correct. Do not over-plan.
 12. Output ONLY valid JSON. No markdown, no commentary.
+13. For forecasting / "predict next months" / "future sales" questions → use action="run_model", target="forecast".
+14. Only use model tool names that appear in the approved model tools list.
 
 ### Few-shot examples (study these carefully)
 
@@ -268,6 +276,42 @@ Question: "What is the monthly trend of revenue?"
   ]
 }
 
+Example 9 – Forecasting
+Question: "Forecast sales for the next 3 months"
+→ {
+  "can_answer": true,
+  "reason": "User requested a time-series forecast",
+  "plan_type": "stats_tool",
+  "steps": [
+    {
+      "step_id": 1,
+      "action": "run_model",
+      "target": "forecast",
+      "filters": {},
+      "args": {"value_col": "sales", "date_col": "date", "periods": 3, "freq": "M"},
+      "join_policy_name": null
+    }
+  ]
+}
+
+Example 10 – Future projection
+Question: "What will revenue look like next quarter?"
+→ {
+  "can_answer": true,
+  "reason": "Forward-looking projection → forecast tool",
+  "plan_type": "stats_tool",
+  "steps": [
+    {
+      "step_id": 1,
+      "action": "run_model",
+      "target": "forecast",
+      "filters": {},
+      "args": {"value_col": "revenue", "date_col": "date", "periods": 3, "freq": "M"},
+      "join_policy_name": null
+    }
+  ]
+}
+
 ### Accuracy Decision Tree
 - Can one existing metric answer it? → single_metric
 - Needs grouping / comparison / highest / lowest? → group_compare
@@ -275,6 +319,7 @@ Question: "What is the monthly trend of revenue?"
 - Needs trend / over time / monthly pattern? → trend
 - Needs sequential calculations? → multi_step (max 3)
 - Needs data from two approved tables? → joined_metric
+- Metric does not exist but a stats tool can approximate the answer? → stats_tool
 - Metric does not exist yet but is safe to propose? → propose_metric
 - Otherwise → no_match
 
@@ -343,7 +388,7 @@ You receive ONLY the tool/metric results and the original question. You must nev
 
 class PlanStep(BaseModel):
     step_id: int = 1
-    action: str = "run_metric"
+    action: str = "run_metric"          # now also "run_stats" | "run_model"
     target: str = ""
     filters: dict = {}
     args: dict = {}
@@ -464,6 +509,8 @@ def plan(
         for t in ALLOWED_STATS_TOOLS
     ]
 
+    model_tools = get_model_tools_for_llm()
+
     # Multi-dataset support: include the list of available dataset names in
     # the planner prompt only when more than one dataset is loaded. With a
     # single dataset (or None), behavior is identical to before.
@@ -490,6 +537,7 @@ def plan(
         f"Allowed filter columns: {allowed_filters}\n\n"
         f"Available metrics:\n{json.dumps(catalog, indent=2)}\n\n"
         f"Available statistical tools:\n{json.dumps(tools_catalog, indent=2)}\n\n"
+        f"Available model tools:\n{json.dumps(model_tools, indent=2)}\n\n"
         f"{dataset_block}"
         f"{context_block}"
         f"Question: {question}"
@@ -499,7 +547,7 @@ def plan(
         provider,
         _build_planner_json_schema(
             metric_names=list(metrics.keys()),
-            tool_names=[t["name"] for t in tools_catalog],
+            tool_names=[t["name"] for t in tools_catalog] + list(VALID_MODEL_TOOL_NAMES),
         ),
     )
 
@@ -517,7 +565,7 @@ def plan(
     metric_names = set(metrics.keys())
     approved_joins = catalog_service.get_approved_joins()
     for step in the_plan.steps:
-        if step.action not in ("run_metric", "run_stats"):
+        if step.action not in ("run_metric", "run_stats", "run_model"):
             step.action = "run_metric"
 
         if step.action == "run_metric" and step.target not in metric_names:
@@ -530,6 +578,12 @@ def plan(
             return Plan(
                 can_answer=False,
                 reason=f"Tool '{step.target}' not in allowed tools",
+                plan_type="no_match",
+            )
+        if step.action == "run_model" and step.target not in VALID_MODEL_TOOL_NAMES:
+            return Plan(
+                can_answer=False,
+                reason=f"Model tool '{step.target}' not in allowed model tools",
                 plan_type="no_match",
             )
 
@@ -782,6 +836,13 @@ def execute_plan(
                         result_entry["_expected_total"] = float(total or 0)
                 except Exception:
                     pass
+            elif step.action == "run_model":
+                if step.target not in VALID_MODEL_TOOL_NAMES:
+                    raise ValueError(f"Unapproved model tool: {step.target}")
+                result = run_model_tool(ds, step.target, step.args or {})
+                # Convert to the same shape your synthesizer expects
+                result_entry["result"] = _json_safe(result.model_dump())
+                result_entry["tool_type"] = "model"
         except Exception as e:
             result_entry["error"] = str(e)
 
@@ -1306,8 +1367,12 @@ def _forced_distribution(question: str, ds: DataSource) -> "Plan | None":
     
     cat = {c.name.lower(): c.name for c in ds.profile.columns if c.is_categorical}
     for c_lower, c_real in cat.items():
-        # check if the category name (or its singular form) is in the question
-        if re.search(r"\b" + re.escape(c_lower) + r"\b", q) or re.search(r"\b" + re.escape(c_lower.rstrip("s")) + r"\b", q):
+        # simple stemming for plurals: allow 's' or 'ies' (if ends in y)
+        base = c_lower[:-1] if c_lower.endswith("y") else c_lower
+        suffix = "(?:ies|ys?)?" if c_lower.endswith("y") else "s?"
+        pattern = r"\b" + re.escape(base) + suffix + r"\b"
+        
+        if re.search(pattern, q):
             return Plan(
                 can_answer=True,
                 reason="deterministic: value_counts",
