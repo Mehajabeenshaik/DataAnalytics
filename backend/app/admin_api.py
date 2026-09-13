@@ -7,13 +7,16 @@ No cross-tenant access even for admins of a different org.
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException, Depends
+
 import os
 import shutil
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
-from .auth import UserOut, require_admin
+from auth_models import UserOut, require_admin  # noqa: E402  (backend/app is on sys.path in both layouts)
+
 from tenant.service import TenantService
 from tenant_quotas import get_usage
 from audit_logger import export_audit
@@ -22,7 +25,7 @@ from catalog.service import CatalogService
 admin_router = APIRouter(tags=["admin"], prefix="/admin")
 
 
-def _resolve_tenant_access(tenant_id: str, user: UserOut) -> None:
+def _resolve_tenant_access(tenant_id: str, user) -> None:
     """Verify the admin has access to the tenant's org.
 
     Global super-admin flag is OFF by default — admins only manage their

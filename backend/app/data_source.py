@@ -167,8 +167,18 @@ class DataSource:
         path = Path(path)
         self.table_name = table_name
 
-        if path.suffix.lower() in {".csv", ".tsv"}:
-            sep = "\t" if path.suffix.lower() == ".tsv" else ","
+        suffix = path.suffix.lower()
+        allowed = {".csv", ".tsv", ".parquet", ".pq", ".xlsx", ".xls", ".json"}
+        if suffix not in allowed:
+            raise ValueError(
+                f"Unsupported file type: {path.suffix or '(no extension)'} "
+                f"for '{path}'. Allowed: {sorted(allowed)}"
+            )
+        if not path.exists():
+            raise ValueError(f"Unsupported file type: no such file '{path}'")
+
+        if suffix in {".csv", ".tsv"}:
+            sep = "\t" if suffix == ".tsv" else ","
             try:
                 df = pd.read_csv(path, encoding="utf-8", sep=sep)
             except UnicodeDecodeError as exc:
@@ -179,13 +189,13 @@ class DataSource:
                     exc.end,
                     "This file is not UTF-8 encoded. Please re-save as CSV UTF-8 and try again.",
                 ) from exc
-        elif path.suffix.lower() in {".parquet", ".pq"}:
+        elif suffix in {".parquet", ".pq"}:
             df = pd.read_parquet(path)
-        elif path.suffix.lower() in {".xlsx", ".xls"}:
+        elif suffix in {".xlsx", ".xls"}:
             df = pd.read_excel(path)
-        elif path.suffix.lower() == ".json":
+        elif suffix == ".json":
             df = pd.read_json(path)
-        else:
+        else:  # pragma: no cover — guarded by the allowlist check above
             raise ValueError(f"Unsupported file type: {path.suffix}")
 
 

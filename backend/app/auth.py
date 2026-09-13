@@ -87,7 +87,10 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
 app.add_middleware(SecurityHeadersMiddleware)
 
 # ── Mount widget API router ───────────────────────────────────────────────
-from .api_widget import widget_router  # noqa: E402
+try:
+    from .api_widget import widget_router  # noqa: E402  (package import: uvicorn backend.app.main:app)
+except ImportError:  # flat import: tests put backend/app on sys.path
+    from api_widget import widget_router  # type: ignore[no-redef]  # noqa: E402
 app.include_router(widget_router)
 
 
@@ -108,7 +111,10 @@ async def health():
     }
 
 # ── Mount SSO router ──────────────────────────────────────────────────────
-from .auth_sso_routes import sso_router  # noqa: E402
+try:
+    from .auth_sso_routes import sso_router  # noqa: E402
+except ImportError:  # flat import: tests put backend/app on sys.path
+    from auth_sso_routes import sso_router  # type: ignore[no-redef]  # noqa: E402
 app.include_router(sso_router)
 
 
@@ -158,22 +164,16 @@ def init_auth_db():
     conn.close()
 
 
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-    role: str
-    username: str
-
-
-class UserOut(BaseModel):
-    username: str
-    role: str
-
-
-class UserCreate(BaseModel):
-    username: str
-    password: str
-    role: str = "viewer"
+from auth_models import (  # noqa: E402  (single source; keeps admin_api import cycle-free)
+    UserOut,
+    Token,
+    UserCreate,
+    create_access_token,
+    get_current_user,
+    require_admin,
+    require_any,
+    oauth2_scheme,
+)
 
 
 def _authenticate(username: str, password: str) -> dict | None:
@@ -185,45 +185,6 @@ def _authenticate(username: str, password: str) -> dict | None:
     return None
 
 
-def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=JWT_EXPIRE_MINUTES))
-    to_encode["exp"] = expire
-    return jwt.encode(to_encode, JWT_SECRET_KEY, algorithm=JWT_ALGORITHM)
-
-
-async def get_current_user(token: str = Depends(oauth2_scheme)) -> UserOut:
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Invalid or expired token",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
-    try:
-        payload = jwt.decode(token, JWT_SECRET_KEY, algorithms=[JWT_ALGORITHM])
-        username = payload.get("sub")
-        role = payload.get("role")
-        if username is None or role is None:
-            raise credentials_exception
-    except JWTError:
-        raise credentials_exception
-    return UserOut(username=username, role=role)
-
-
-class RoleChecker:
-    def __init__(self, allowed_roles: list[str]):
-        self.allowed_roles = allowed_roles
-
-    def __call__(self, user: UserOut = Depends(get_current_user)) -> UserOut:
-        if user.role not in self.allowed_roles:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"Role '{user.role}' not permitted. Required: {self.allowed_roles}",
-            )
-        return user
-
-
-require_admin = RoleChecker(["admin"])
-require_any = RoleChecker(["admin", "viewer"])
 
 
 @app.on_event("startup")
@@ -609,5 +570,8 @@ async def get_pii_vault(customer_id: int):
 
 
 # ── Late import avoids circular import: admin_api imports get_current_user from auth ──
-from .admin_api import admin_router  # noqa: E402
+try:
+    from .admin_api import admin_router  # noqa: E402
+except ImportError:  # flat import: tests put backend/app on sys.path
+    from admin_api import admin_router  # type: ignore[no-redef]  # noqa: E402
 app.include_router(admin_router)

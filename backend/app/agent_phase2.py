@@ -672,10 +672,9 @@ def _json_safe(obj):
     if isinstance(obj, Series):
         return {str(k): _json_safe(v) for k, v in obj.items()}
     if isinstance(obj, DataFrame):
-        return [
-            {str(k): _json_safe(v) for k, v in row.items()}
-            for row in obj.to_dict(orient="records")
-        ]
+        # Keep DataFrames raw: callers (execute_plan results, chart builder)
+        # rely on the DataFrame type; serialization happens at the API edge.
+        return obj
     if isinstance(obj, dict):
         return {str(k): _json_safe(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple, set)):
@@ -808,13 +807,16 @@ def execute_plan(
                             f'SELECT SUM("{metric["column"]}") FROM {ds.table_name}{where_sql}',
                             params,
                         ).iloc[0, 0]
-                        result_entry["_breakdown"] = _json_safe(result.to_dict())
+                        result_entry["_breakdown"] = dict(result.to_dict()) if hasattr(result, "to_dict") else result
                         result_entry["_expected_total"] = float(total or 0)
                 except Exception:
                     pass
             elif step.action == "run_stats":
                 result = run_stats_tool(ds, step.target, step.args)
-                result_entry["result"] = _json_safe(result)
+                # Keep raw pandas objects in results (tests + chart builder
+                # depend on DataFrame/Series types); serialization to JSON-safe
+                # form happens in _build_synthesize_prompt at the LLM edge.
+                result_entry["result"] = result
 
                 # Verification metadata for breakdown-vs-total checks.
                 try:
@@ -823,7 +825,7 @@ def execute_plan(
                         total = ds.query(
                             f'SELECT SUM("{value_col}") FROM {ds.table_name}'
                         ).iloc[0, 0]
-                        result_entry["_breakdown"] = _json_safe(result.to_dict())
+                        result_entry["_breakdown"] = dict(result.to_dict())
                         result_entry["_expected_total"] = float(total or 0)
                     elif step.target == "trend":
                         value_col = step.args["value_col"]
@@ -832,7 +834,7 @@ def execute_plan(
                             f'SELECT SUM("{value_col}") FROM {ds.table_name} '
                             f'WHERE "{date_col}" IS NOT NULL'
                         ).iloc[0, 0]
-                        result_entry["_breakdown"] = _json_safe(result.set_index("period")["value"].to_dict())
+                        result_entry["_breakdown"] = dict(result.set_index("period")["value"].to_dict())
                         result_entry["_expected_total"] = float(total or 0)
                 except Exception:
                     pass

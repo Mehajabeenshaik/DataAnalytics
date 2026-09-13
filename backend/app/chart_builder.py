@@ -14,13 +14,15 @@ def build_chart_spec(step: dict) -> dict | None:
     if result is None:
         return None
 
+    # Time-series result: dict[str-date, number] or list of {date, value}
+    # Date-shaped keys beat generic breakdown matching — "2024-01-01" keys are
+    # a trend, not categories, so check dates BEFORE _is_breakdown.
+    if isinstance(result, dict) and _looks_like_dates(result):
+        return _line_chart(result, target)
+
     # Breakdown / groupby result: dict[str, number]
     if isinstance(result, dict) and _is_breakdown(result):
         return _bar_chart(result, target)
-
-    # Time-series result: dict[str-date, number] or list of {date, value}
-    if isinstance(result, dict) and _looks_like_dates(result):
-        return _line_chart(result, target)
 
     if isinstance(result, list) and result and isinstance(result[0], dict):
         if _looks_like_series_records(result):

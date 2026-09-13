@@ -29,3 +29,8 @@ os.environ.setdefault("NVIDIA_API_KEY", "test-key")
 _APP_DIR = Path(__file__).resolve().parents[1] / "app"
 if str(_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_APP_DIR))
+
+# test_auth.py is a manual live-server script with module-level httpx calls
+# (not a pytest module); never collect it under pytest. Run directly:
+#   python backend/tests/test_auth.py
+collect_ignore = ["test_auth.py"]

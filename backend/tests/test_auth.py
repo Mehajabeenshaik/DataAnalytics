@@ -1,7 +1,22 @@
 import httpx
 import os
-import time
 import sys
+import time
+
+import pytest
+
+# test_auth.py is a manual live-server script (module-level httpx calls);
+# it must never be imported by pytest — run it directly instead:
+#   python backend/tests/test_auth.py
+collect_ignore = ["test_auth.py"]
+
+pytestmark = pytest.mark.skip(
+    reason="manual live-server script (needs uvicorn on :8000); not a pytest test"
+)
+
+if False:  # guard: never execute manual script body under pytest
+    pass
+
 
 BASE = "http://localhost:8000"
 

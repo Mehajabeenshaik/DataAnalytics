@@ -41,23 +41,19 @@ def test_cache_hit_skips_llm(ds):
     metrics = ds.get_metrics()
     first_metric = list(metrics.keys())[0]
     provider = MagicMock()
+    # Deterministic forced plans resolve "What is total revenue?" without a
+    # planner LLM call — only the synthesizer hits the LLM.
     provider.generate.side_effect = [
-        json.dumps({
-            "can_answer": True,
-            "reason": "Found",
-            "plan_type": "single_metric",
-            "steps": [{"step_id": 1, "action": "run_metric", "target": first_metric, "filters": {}, "args": {}}],
-        }),
         json.dumps({"answer": "Result.", "confidence": "high", "caveats": [], "lineage": {"metrics_or_tools_used": [first_metric], "filters_applied": {}, "notes": "6 rows"}}),
     ]
     # First call - cache miss, should call LLM
     result1 = ask("What is total revenue?", ds, provider)
-    assert provider.generate.call_count == 2  # planner + synthesizer
+    assert provider.generate.call_count == 1  # synthesizer only (forced plan)
     assert result1.get("cached") is not True  # not from cache
 
     # Second call - cache hit, should NOT call LLM
     result2 = ask("What is total revenue?", ds, provider)
-    assert provider.generate.call_count == 2  # still 2, no new calls
+    assert provider.generate.call_count == 1  # still 1, no new calls
     assert result2.get("cached") is True  # from cache
 
 
@@ -66,8 +62,8 @@ def test_cache_normalization(ds):
     metrics = ds.get_metrics()
     first_metric = list(metrics.keys())[0]
     provider = MagicMock()
+    # "Total revenue?" resolves via forced plan (no planner LLM call).
     provider.generate.side_effect = [
-        json.dumps({"can_answer": True, "reason": "Found", "plan_type": "single_metric", "steps": [{"step_id": 1, "action": "run_metric", "target": first_metric, "filters": {}, "args": {}}]}),
         json.dumps({"answer": "Result.", "confidence": "high", "caveats": [], "lineage": {"metrics_or_tools_used": [first_metric], "filters_applied": {}, "notes": "6 rows"}}),
     ]
     # First call with "Total revenue?"
@@ -75,7 +71,7 @@ def test_cache_normalization(ds):
     # Second call with "total revenue" (no question mark, different case)
     result2 = ask("total revenue", ds, provider)
     assert result2.get("cached") is True
-    assert provider.generate.call_count == 2  # only first call hit LLM
+    assert provider.generate.call_count == 1  # only first call hit LLM
 
 
 def test_no_match_not_cached(ds):
@@ -97,7 +93,6 @@ def test_clear_cache(ds):
     first_metric = list(metrics.keys())[0]
     provider = MagicMock()
     provider.generate.side_effect = [
-        json.dumps({"can_answer": True, "reason": "Found", "plan_type": "single_metric", "steps": [{"step_id": 1, "action": "run_metric", "target": first_metric, "filters": {}, "args": {}}]}),
         json.dumps({"answer": "Result.", "confidence": "high", "caveats": [], "lineage": {"metrics_or_tools_used": [first_metric], "filters_applied": {}, "notes": "6 rows"}}),
     ]
     ask("What is total revenue?", ds, provider)
@@ -136,13 +131,11 @@ def test_cache_does_not_leak_across_datasets():
     metric_a = list(ds_a.get_metrics().keys())[0]
     metric_b = list(ds_b.get_metrics().keys())[0]
 
+    # Distinct questions per dataset avoid the forced-plan path caching
+    # across identical texts; synthesizer-only side_effect per ask call.
     provider = MagicMock()
     provider.generate.side_effect = [
-        json.dumps({"can_answer": True, "reason": "Found", "plan_type": "single_metric",
-                    "steps": [{"step_id": 1, "action": "run_metric", "target": metric_a, "filters": {}, "args": {}}]}),
         json.dumps({"answer": "Dataset A result.", "confidence": "high", "caveats": [], "lineage": {}}),
-        json.dumps({"can_answer": True, "reason": "Found", "plan_type": "single_metric",
-                    "steps": [{"step_id": 1, "action": "run_metric", "target": metric_b, "filters": {}, "args": {}}]}),
         json.dumps({"answer": "Dataset B result.", "confidence": "high", "caveats": [], "lineage": {}}),
     ]
 
@@ -150,4 +143,4 @@ def test_cache_does_not_leak_across_datasets():
     result_b = ask("What is total revenue?", ds_b, provider)
 
     assert result_a["answer"] != result_b["answer"]
-    assert provider.generate.call_count == 4  # both datasets hit the LLM, no false cache hit
+    assert provider.generate.call_count == 2  # both datasets hit the LLM, no false cache hit

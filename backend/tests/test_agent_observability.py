@@ -27,16 +27,9 @@ def ds():
 @pytest.fixture
 def provider():
     p = MagicMock()
-    # First call = planner, second call = synthesizer
+    # "What is total revenue?" resolves via deterministic forced plan
+    # (no planner LLM call) — only the synthesizer hits the LLM.
     p.generate.side_effect = [
-        json.dumps({
-            "can_answer": True,
-            "reason": "Found metric",
-            "plan_type": "single_metric",
-            "steps": [
-                {"step_id": 1, "action": "run_metric", "target": "total_revenue", "filters": {}, "args": {}}
-            ],
-        }),
         json.dumps({
             "answer": "Total revenue is 1400.",
             "confidence": "high",
