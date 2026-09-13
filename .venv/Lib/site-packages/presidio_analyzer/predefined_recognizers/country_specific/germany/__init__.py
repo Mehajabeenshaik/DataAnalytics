@@ -1,1 +1,0 @@
-"""Germany-specific recognizers package."""

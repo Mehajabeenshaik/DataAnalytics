@@ -1,6 +1,11 @@
 __pycache__/
 *.pyc
 
+# ── Virtual environments (never commit) ──────────────────────────────
+.venv/
+venv/
+env/
+
 # ── Secrets & env files ──────────────────────────────────────────────
 # .env contains real API keys — NEVER commit it.
 # .env.example is safe (placeholders only) and SHOULD be committed.
