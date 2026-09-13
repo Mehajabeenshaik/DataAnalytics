@@ -104,6 +104,13 @@ hard-coded password**.
 - [ ] Ship logs and audit events to a central store.
 - [ ] Ensure `/health` is reachable through the proxy for orchestrator
       probes (and the Docker healthcheck).
+- [ ] `GET /health` returns `phase: 5` + invariant; `GET /ready` returns
+      `ready` with tenant/audit store checks.
+- [ ] `GET /health` carries `X-Request-ID`, `X-Content-Type-Options`,
+      `X-Frame-Options`, `Referrer-Policy`.
+- [ ] `/api/v1/ask` emits a structured `daana.obs` log line (no PII dumps).
+- [ ] Regenerate the trust smoke report (`TRUST_REPORT.md`) after hardening
+      changes; keep `docs/TRUST_REPORT.md` (full eval) untouched.
 
 ## Recommended architecture
 

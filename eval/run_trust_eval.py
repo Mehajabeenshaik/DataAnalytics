@@ -32,6 +32,8 @@ ROOT = Path(__file__).resolve().parents[1]
 _APP_DIR = ROOT / "backend" / "app"
 if str(_APP_DIR) not in sys.path:
     sys.path.insert(0, str(_APP_DIR))
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from data_source import DataSource
 from agent_phase2 import ask

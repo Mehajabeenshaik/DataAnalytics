@@ -119,27 +119,53 @@ APP_ENV = os.getenv("APP_ENV", os.getenv("ENV", "development")).strip().lower()
 _DEMO_API_KEY_SENTINEL = "ak_demo_key_12345"
 
 
+# ── Phase 5: core safety invariant (single source of truth) ───────────────
+# The LLM never generates or executes SQL or Python — it only selects from
+# the approved catalog; execution is deterministic and governed.
+CORE_INVARIANT = "The LLM never generates or executes SQL or Python."
+
+
+def _live(key: str, fallback: str) -> str:
+    """Read env live (tests monkeypatch os.environ); fall back to import-time value."""
+    return os.getenv(key, fallback)
+
+
 def validate_production_config() -> None:
     """Fail-closed guardrails for APP_ENV=production.
 
     Called at app startup (config import). Raising here prevents the service
     from booting with known-unsafe production defaults. Development/staging
     are intentionally lenient so the local 5-minute demo still works.
+
+    Reads os.environ LIVE so tests can monkeypatch env vars without reimport.
     """
-    if APP_ENV != "production":
+    app_env = _live("APP_ENV", APP_ENV).strip().lower()
+    if not app_env:
+        app_env = _live("ENV", "development").strip().lower()
+    if app_env != "production":
         return
 
     failures: list[str] = []
-    if DEMO_API_KEY == _DEMO_API_KEY_SENTINEL:
+    jwt = _live("JWT_SECRET_KEY", JWT_SECRET_KEY)
+    if not jwt or jwt == _JWT_SECRET_DEFAULT_SENTINEL or len(jwt) < 32:
+        failures.append(
+            "JWT_SECRET_KEY must be a strong secret (len>=32), not the placeholder"
+        )
+    if _live("DEMO_API_KEY", DEMO_API_KEY) == _DEMO_API_KEY_SENTINEL:
         failures.append(
             "DEMO_API_KEY is still the well-known demo key 'ak_demo_key_12345'. "
             "Rotate it (DEMO_API_KEY=<random>) before going to production."
         )
-    if not TENANT_ISOLATION_ENABLED:
+    tenant_iso = _live(
+        "TENANT_ISOLATION_ENABLED", "true" if TENANT_ISOLATION_ENABLED else "false"
+    ).lower() == "true"
+    if not tenant_iso:
         failures.append(
             "TENANT_ISOLATION_ENABLED must be 'true' in production."
         )
-    if CORS_ALLOW_ALL:
+    cors_raw = _live("CORS_ORIGINS", CORS_ORIGINS_RAW)
+    cors_list = [o.strip() for o in cors_raw.split(",") if o.strip()] or ["*"]
+    if "*" in cors_list:
         failures.append(
             "CORS_ORIGINS must be an explicit allowlist (not '*') in production."
         )

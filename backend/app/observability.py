@@ -90,7 +90,65 @@ def get_usage_summary(tenant_id: str, days: int = 30) -> dict:
     }
 
 
-# ── Agent-run telemetry (Phase 2.5) ───────────────────────────────────────
+# ── Phase 5: structured ask-observability (no PII) ─────────────────────────
+# Appended to the existing JSONL observability (record_event/log_agent_run).
+# log_ask() is a one-line structured log for an /ask cycle; Timer measures ms.
+
+import logging as _logging
+import time as _obs_time
+import uuid as _obs_uuid
+from typing import Any as _ObsAny
+
+_obs_logger = _logging.getLogger("daana.obs")
+
+# Simple in-process counters (optional; reset on process restart)
+asks_total = 0
+asks_denied = 0
+quota_rejections = 0
+
+
+def new_request_id() -> str:
+    return _obs_uuid.uuid4().hex
+
+
+def log_ask(
+    *,
+    request_id: str,
+    tenant_id: str | None,
+    plan_type: str | None,
+    latency_ms: float,
+    confidence: str | None,
+    flags: list[str] | None,
+    status: str,
+    extra: dict[str, _ObsAny] | None = None,
+) -> None:
+    """Structured one-line log for an /ask cycle. Never log raw row payloads."""
+    payload: dict[str, _ObsAny] = {
+        "request_id": request_id,
+        "tenant_id": tenant_id,
+        "plan_type": plan_type,
+        "latency_ms": round(latency_ms, 2),
+        "confidence": confidence,
+        "flags": flags or [],
+        "status": status,
+    }
+    if extra:
+        # only allow safe scalar extras
+        for k, v in extra.items():
+            if isinstance(v, (str, int, float, bool)) or v is None:
+                payload[k] = v
+    _obs_logger.info("ask %s", payload)
+
+
+class Timer:
+    def __init__(self) -> None:
+        self._t0 = _obs_time.perf_counter()
+
+    def ms(self) -> float:
+        return (_obs_time.perf_counter() - self._t0) * 1000.0
+
+# ── Agent-run telemetry (Phase 2.5, kept) ──────────────────────────────────
+
 
 def log_agent_run(
     tenant_id: str,

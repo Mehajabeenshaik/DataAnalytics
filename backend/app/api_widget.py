@@ -11,13 +11,46 @@ from __future__ import annotations
 import json
 import logging
 logging.basicConfig(level=logging.DEBUG)
+import time as _time
+import uuid as _uuid
+from typing import Any as _Any
+
+
+def _phase5_log_ask(
+    *,
+    request_id: str | None = None,
+    tenant_id: str | None = None,
+    plan_type: str | None = None,
+    latency_ms: float = 0.0,
+    confidence: str | None = None,
+    flags: list | None = None,
+    status: str = "completed",
+    extra: dict | None = None,
+) -> None:
+    """Structured one-line log for an /ask cycle. Never log raw row payloads."""
+    payload: dict[str, _Any] = {
+        "request_id": request_id or _uuid.uuid4().hex,
+        "tenant_id": tenant_id,
+        "plan_type": plan_type,
+        "latency_ms": round(latency_ms, 2),
+        "confidence": confidence,
+        "flags": flags or [],
+        "status": status,
+    }
+    if extra:
+        for k, v in extra.items():
+            if isinstance(v, (str, int, float, bool)) or v is None:
+                payload[k] = v
+    logging.getLogger("daana.obs").info("ask %s", payload)
+
+
 import uuid
 import traceback
 import tempfile
 from pathlib import Path
 
 import pandas as pd
-from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Header, UploadFile, File, Form, Request
 from fastapi.responses import FileResponse, StreamingResponse
 
 from pydantic import BaseModel
@@ -468,10 +501,12 @@ def _resolve_widget_session(req: AskRequest, tenant: Tenant) -> dict:
 @widget_router.post("/api/v1/ask", response_model=AskResponse)
 async def ask_question(
     req: AskRequest,
+    request: Request,
     tenant: Tenant = Depends(require_tenant),
 ):
     """Ask a natural-language follow-up question about the uploaded data."""
     session = _resolve_widget_session(req, tenant)
+    _t0 = _time.perf_counter()
 
     try:
         provider = get_provider()
@@ -497,6 +532,15 @@ async def ask_question(
         )
 
         # Serialize any pandas objects in results
+        _phase5_log_ask(
+            request_id=getattr(getattr(request, "state", None), "request_id", "unknown"),
+            tenant_id=tenant.api_key,
+            plan_type=(result.get("plan") or {}).get("plan_type") or result.get("plan_type"),
+            latency_ms=(_time.perf_counter() - _t0) * 1000.0,
+            confidence=result.get("confidence"),
+            flags=result.get("flags"),
+            status=result.get("status") or "completed",
+        )
         return AskResponse(
             answer=result.get("answer", ""),
             confidence=result.get("confidence", "n/a"),

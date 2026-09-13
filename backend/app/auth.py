@@ -65,26 +65,25 @@ app.add_middleware(
 
 # ── Security headers ──────────────────────────────────────────────────────
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.responses import Response
 
-
-class SecurityHeadersMiddleware(BaseHTTPMiddleware):
-    """Add basic hardening headers to every response.
-
-    These are cheap, framework-level defenses that complement the safety
-    invariants enforced elsewhere (approved metrics, PII masking, RBAC).
-    Production TLS/proxy headers are configured at the reverse proxy.
-    """
-
-    async def dispatch(self, request, call_next):
-        response = await call_next(request)
-        response.headers.setdefault("X-Content-Type-Options", "nosniff")
-        response.headers.setdefault("X-Frame-Options", "DENY")
-        response.headers.setdefault("Referrer-Policy", "no-referrer")
-        response.headers.setdefault("X-XSS-Protection", "1; mode=block")
-        return response
+try:
+    from .security_middleware import (  # noqa: E402 package import
+        RequestIdMiddleware,
+        SecurityHeadersMiddleware,
+        new_request_id,
+    )
+except ImportError:  # flat import: tests put backend/app on sys.path
+    from security_middleware import (  # type: ignore[no-redef]  # noqa: E402
+        RequestIdMiddleware,
+        SecurityHeadersMiddleware,
+        new_request_id,
+    )
 
 
 app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestIdMiddleware)
 
 # ── Mount widget API router ───────────────────────────────────────────────
 try:
@@ -102,12 +101,50 @@ async def health():
     or auxiliary stores are temporarily unavailable, so orchestrators can
     restart only the dead container instead of the whole service.
     """
+    from config import APP_ENV, CORE_INVARIANT, TENANT_ISOLATION_ENABLED, LLM_PROVIDER
+
     return {
         "status": "ok",
         "service": "daana",
         "version": "2.0",
+        "phase": 5,
+        "env": APP_ENV,
+        "tenant_isolation_enabled": TENANT_ISOLATION_ENABLED,
+        "llm_provider": LLM_PROVIDER,
         "policy": {"phase": 4, "enforced": True},
-        "invariant": "The LLM never generates or executes SQL or Python.",
+        "invariant": CORE_INVARIANT,
+    }
+
+
+@app.get("/ready")
+async def ready():
+    """Readiness probe: writable tenant/audit stores."""
+    import os as _os
+
+    from config import APP_ENV
+
+    try:
+        from config import BASE_DIR
+    except ImportError:
+        from pathlib import Path as _P
+
+        BASE_DIR = str(_P(__file__).resolve().parents[2])
+    checks: dict = {}
+    for key, sub in (("tenant_store_ok", "data/tenants"), ("audit_path_ok", "data/audit")):
+        try:
+            p = Path(BASE_DIR) / sub
+            p.mkdir(parents=True, exist_ok=True)
+            ok = p.is_dir() and _os.access(p, _os.W_OK)
+            checks[key] = bool(ok)
+        except Exception as e:  # noqa: BLE001 — readiness must report, not raise
+            checks[key] = False
+            checks[key.replace("_ok", "_error")] = str(e)
+    ok = all(v is True for k, v in checks.items() if k.endswith("_ok"))
+    return {
+        "status": "ready" if ok else "not_ready",
+        "env": APP_ENV,
+        "phase": 5,
+        "checks": checks,
     }
 
 # ── Mount SSO router ──────────────────────────────────────────────────────
