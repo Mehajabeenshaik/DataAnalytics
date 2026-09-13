@@ -99,7 +99,13 @@ async def health():
     or auxiliary stores are temporarily unavailable, so orchestrators can
     restart only the dead container instead of the whole service.
     """
-    return {"status": "ok", "service": "daana", "version": "2.0"}
+    return {
+        "status": "ok",
+        "service": "daana",
+        "version": "2.0",
+        "policy": {"phase": 4, "enforced": True},
+        "invariant": "The LLM never generates or executes SQL or Python.",
+    }
 
 # ── Mount SSO router ──────────────────────────────────────────────────────
 from .auth_sso_routes import sso_router  # noqa: E402

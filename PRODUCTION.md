@@ -10,6 +10,10 @@ running governed analytics in front of real customers or a security review.
       The app **refuses to start** with the insecure placeholder.
 - [ ] Keep `.env` out of version control (it is gitignored). Ship
       `.env.example` with placeholders only.
+- [ ] Set `APP_ENV=production`. With `APP_ENV=production` the app **refuses to
+      start** unless the fail-closed guardrails in `config.validate_production_config()`
+      pass: `DEMO_API_KEY` is rotated, `TENANT_ISOLATION_ENABLED=true`, and
+      `CORS_ORIGINS` is an explicit allowlist (no `*`).
 - [ ] Use a real, rotated `DB_ENCRYPTION_KEY` (Fernet) so the PII vault is
       decryptable only in your environment.
 - [ ] Never paste real keys into `docker-compose.yml`; pass them via a host
@@ -82,6 +86,15 @@ hard-coded password**.
 - [ ] Confirm the safety invariant end-to-end: **the LLM never generates
       executable SQL/Python** — it only *chooses* pre-approved metrics/tools,
       and execution is deterministic.
+- [ ] Confirm the **Phase 4 policy is enforced before execution** on the
+      production path: `POST /api/v1/ask` runs `agent_phase4.run_governed_ask`,
+      which sanitises input, applies the Verification Critic (allowlist,
+      non-evasion, confirmation) **before** any metric/tool runs, and pauses
+      consequential actions for explicit human confirmation
+      (`POST /api/v1/ask/confirm`) — policy enforced in code, never via prompt.
+- [ ] Confirm every ask audit record carries `claimed_tools_metrics` vs
+      `observed_tools_metrics` (action monitoring) and that a mismatch sets the
+      `claim_observation_mismatch` flag.
 - [ ] Run the full trust eval with your **production** LLM provider
       (`python eval/run_trust_eval.py --provider <prod>`), not just `mock`.
 

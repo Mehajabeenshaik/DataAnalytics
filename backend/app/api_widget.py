@@ -32,6 +32,8 @@ from resource_limits import ResourceLimitError
 import agent_phase2
 import stats_tools
 from data_quality import build_quality_report
+from agent_phase4 import run_governed_ask, INVARIANT
+from policy import get_confirmation_manager
 
 widget_router = APIRouter(tags=["widget"])
 
@@ -87,6 +89,19 @@ class AskResponse(BaseModel):
     caveats: list[str] = []
     lineage: dict = {}
     chart: dict | None = None
+    status: str = "completed"
+    flags: list[str] = []
+    invariant: str | None = None
+    plan_type: str | None = None
+    confirmation_token: str | None = None
+    user_message: str | None = None
+    policy: dict | None = None
+    tenant_id: str | None = None
+
+
+class ConfirmRequest(BaseModel):
+    confirmation_token: str
+    approve: bool = True
 
 
 class SessionInfoResponse(BaseModel):
@@ -472,7 +487,7 @@ async def ask_question(
             logger.debug("No profile available for dataset")
         logger.debug("Metric keys (first 20): %s", list(ds.get_metrics().keys())[:20] if ds else [])
         # tenant_id = the API key (existing isolation boundary for the widget)
-        result = agent_phase2.ask(
+        result = run_governed_ask(
             req.question,
             ds,
             provider,
@@ -488,6 +503,14 @@ async def ask_question(
             caveats=result.get("caveats", []),
             lineage=result.get("lineage", {}),
             chart=result.get("chart"),
+            status=result.get("status", "completed"),
+            flags=result.get("flags", []),
+            invariant=result.get("invariant"),
+            plan_type=result.get("plan_type"),
+            confirmation_token=result.get("confirmation_token"),
+            user_message=result.get("user_message"),
+            policy=result.get("policy"),
+            tenant_id=result.get("tenant_id"),
         )
     except ConnectionError as e:
         raise HTTPException(
@@ -507,10 +530,43 @@ async def ask_question(
             confidence="low",
             caveats=[str(e)],
             lineage={"metrics_or_tools_used": [], "filters_applied": {}, "notes": "resource_limit"},
+            status="resource_limit",
+            invariant=INVARIANT,
         )
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Query failed: {str(e)}")
+
+
+@widget_router.post("/api/v1/ask/confirm")
+async def ask_confirm(
+    req: ConfirmRequest,
+    tenant: Tenant = Depends(require_tenant),
+):
+    """Approve or reject a consequential action that was awaiting confirmation.
+
+    The token is scoped to the tenant: a tenant can only resolve its own
+    pending confirmation requests. This returns the resolution status only —
+    no side effects are executed here beyond marking the request approved.
+    """
+    conf = get_confirmation_manager().get_pending(req.confirmation_token)
+    if conf is None:
+        raise HTTPException(status_code=404, detail="Confirmation token not found or expired")
+
+    if conf.tenant_id != tenant.api_key:
+        raise HTTPException(status_code=403, detail="Token does not belong to this tenant")
+
+    resolved = get_confirmation_manager().resolve(req.confirmation_token, req.approve)
+    if resolved is None:
+        raise HTTPException(status_code=404, detail="Confirmation token not found or expired")
+
+    return {
+        "status": "approved" if resolved.status == "approved" else "rejected",
+        "message": "Action approved." if resolved.status == "approved" else "Action rejected.",
+        "action_type": resolved.action_type,
+        "invariant": INVARIANT,
+        "policy": {"phase": 4, "enforced": True},
+    }
 
 
 @widget_router.post("/api/v1/ask/stream")

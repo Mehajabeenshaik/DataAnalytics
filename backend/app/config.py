@@ -112,4 +112,45 @@ CORS_ORIGINS_RAW = os.getenv("CORS_ORIGINS", "*")
 CORS_ORIGINS = [o.strip() for o in CORS_ORIGINS_RAW.split(",") if o.strip()] or ["*"]
 CORS_ALLOW_ALL = "*" in CORS_ORIGINS
 
+# ── Environment ───────────────────────────────────────────────────────────
+# Normalized deployment environment: development | staging | production.
+# `ENV` is honoured as a fallback alias for CI/tooling that only sets ENV.
+APP_ENV = os.getenv("APP_ENV", os.getenv("ENV", "development")).strip().lower()
+_DEMO_API_KEY_SENTINEL = "ak_demo_key_12345"
+
+
+def validate_production_config() -> None:
+    """Fail-closed guardrails for APP_ENV=production.
+
+    Called at app startup (config import). Raising here prevents the service
+    from booting with known-unsafe production defaults. Development/staging
+    are intentionally lenient so the local 5-minute demo still works.
+    """
+    if APP_ENV != "production":
+        return
+
+    failures: list[str] = []
+    if DEMO_API_KEY == _DEMO_API_KEY_SENTINEL:
+        failures.append(
+            "DEMO_API_KEY is still the well-known demo key 'ak_demo_key_12345'. "
+            "Rotate it (DEMO_API_KEY=<random>) before going to production."
+        )
+    if not TENANT_ISOLATION_ENABLED:
+        failures.append(
+            "TENANT_ISOLATION_ENABLED must be 'true' in production."
+        )
+    if CORS_ALLOW_ALL:
+        failures.append(
+            "CORS_ORIGINS must be an explicit allowlist (not '*') in production."
+        )
+    if failures:
+        raise RuntimeError(
+            "Production configuration check failed:\n  - " + "\n  - ".join(failures)
+        )
+
+
+# Runs at startup (config is imported by the app factory). Fails-fast if any
+# production guardrail is violated.
+validate_production_config()
+
 

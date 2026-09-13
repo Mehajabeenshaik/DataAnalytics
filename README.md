@@ -44,22 +44,34 @@ Shipping a chatbot is easy. Shipping **governed** answers is the real product.
 Natural-language question
         │
         ▼
-┌───────────────────┐
-│  1. Plan          │  LLM chooses approved metrics / stats tools only
-└─────────┬─────────┘
+┌────────────────────┐
+│  0. Sanitize       │  neutralise prompt-injection in question/data
+├──────────┬─────────┤
+┌──────────▼─────────┐
+│  1. Plan           │  LLM chooses approved metrics / stats tools only
+└──────────┬─────────┘
+          ▼
+┌─────────────────────────────┐
+│  Policy Critic (code, pre)  │  allowlist + non-evasion + confirmation
+└──────────┬──────────────────┘
           ▼
 ┌───────────────────┐
 │  2. Execute       │  Deterministic engine (DuckDB / parameterized live SQL)
 └─────────┬─────────┘
           ▼
 ┌───────────────────┐
-│  3. Synthesize    │  LLM writes the narrative from tool results only
+│  3. Synthesize    │  LLM writes the narrative from scrubbed tool results only
 └─────────┬─────────┘
           ▼
-   Answer + confidence + lineage + caveats
+   Verify + Ground + Audit (claimed vs observed)
+          ▼
+   Answer + confidence + flags + lineage + caveats
 ```
 
-**Invariant:** the model never generates SQL or Python that gets executed.
+**Invariant:** the model never generates SQL or Python that gets executed, and
+every consequence-gated action (export, write-back, report, propose-metric)
+pauses for explicit human confirmation *before* anything runs. All policy is
+enforced in **code** (the Verification Critic), never via prompt instructions.
 
 ---
 
@@ -247,7 +259,9 @@ This is the difference between a weekend agent demo and software you can put in 
 | Path | Role |
 |------|------|
 | `backend/app/main.py` | FastAPI entry point (`uvicorn backend.app.main:app`) |
-| `backend/app/agent_phase2.py` | Plan → execute → synthesize agent |
+| `backend/app/agent_phase2.py` | Plan → execute → synthesize agent primitives |
+| `backend/app/agent_phase4.py` | **Governed Phase 4 orchestrator** (`run_governed_ask`) used by `/api/v1/ask` |
+| `backend/app/policy/` | **Verification Critic** (code): critic, confirmation, grounding, injection |
 | `backend/app/catalog/` | Versioned metric catalog + approval |
 | `backend/app/stats_tools.py` | Deterministic statistical tools |
 | `backend/app/data_source.py` | CSV / live DB load, profiling, PII |
@@ -264,18 +278,29 @@ This is the difference between a weekend agent demo and software you can put in 
 > `backend/app/` (imported by name, e.g. `from config import …`). The
 > `backend/app/domain/` + `backend/app/infra/` packages are scaffolding for a
 > longer-term layered refactor and are not yet wired into the runtime paths.
+>
+> **One production tree:** `phase0/` was a historical sandbox only. It is not
+> executed in production. Its Phase 4 policy (critic, confirmation, grounding,
+> injection) has been merged into `backend/app/policy/` and archived under
+> `docs/archive/phase0-sandbox/`. The production agent lives entirely under
+> `backend/`.
 
 ---
 
 ## Roadmap posture
 
-**Done (as of Aug 2026):**
-governed agent (LLM never generates executable SQL/Python), metric catalog +
-propose/approve workflow with admin console (`/admin`), multi-tenant limits
-and isolation, audit log + export, safe bootstrap auth (no default passwords)
-with rate-limited login and in-app password change, Apache-2.0 license,
-production checklist, Docker hardening (non-root + healthcheck),
-config-driven CORS/security headers, configurable demo API key.
+**Done (as of Sep 2026):**
+governed Phase 4 agent — the production `/api/v1/ask` runs the headed
+orchestrator (`backend/app/agent_phase4.py`) that sanitises input, plans
+against an allowlist, applies a **pre-execution Verification Critic**
+(allowlist, non-evasion, confirmation), executes deterministically, PII-scrubs,
+verifies + grounds the answer, and audits claimed-vs-observed tools. Policy is
+enforced in code, not prompts. The core invariant holds: the LLM never
+generates or executes SQL/Python. Also: repo hygiene (`.venv` untracked, single
+`backend/` tree), fail-closed production config
+(`validate_production_config()`), metric catalog + propose/approve workflow,
+tenant isolation, audit, safe bootstrap auth, CI that does not rely on a
+committed virtualenv.
 
 **Next (design-partner blockers):**
 production OIDC against a real IdP (Okta / Entra / Auth0), expanded customer

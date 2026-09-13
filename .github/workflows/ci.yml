@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       JWT_SECRET_KEY: test-secret-key-not-for-prod-32chars-min
+      APP_ENV: development
       LLM_PROVIDER: mock
       NVIDIA_API_KEY: test-key
     steps:
@@ -33,13 +34,11 @@ jobs:
         run: |
           python -m spacy download en_core_web_sm || true
 
-      - name: Run P0 planner + verification tests
+      - name: Run test suite
+        # Production tree only (backend/tests). Never relies on a committed
+        # .venv — every run installs from requirements.txt above.
         run: |
-          python -m pytest \
-            backend/tests/test_p0_planner_routes.py \
-            backend/tests/test_synonym_coverage.py \
-            backend/tests/test_verification.py \
-            backend/tests/test_agent_phase2.py \
-            backend/tests/test_analyst_routes.py \
-            backend/tests/test_data_quality.py \
+          python -m pytest backend/tests \
+            --ignore=backend/tests/test_auth.py \
+            --ignore=backend/tests/test_api_widget.py \
             -q --tb=line
