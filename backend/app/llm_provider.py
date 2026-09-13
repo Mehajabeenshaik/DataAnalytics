@@ -636,7 +636,11 @@ class FallbackLLMProvider(LLMProvider):
 
 
 def get_provider(provider: str | None = None) -> LLMProvider:
-    provider = provider or LLM_PROVIDER
+    # Read the env LIVE (not the import-time snapshot in config.LLM_PROVIDER)
+    # so tests / CI that set LLM_PROVIDER after import behave predictably.
+    import os as _os
+
+    provider = provider or _os.getenv("LLM_PROVIDER", LLM_PROVIDER)
     try:
         if provider == "ollama":
             return OllamaProvider()
