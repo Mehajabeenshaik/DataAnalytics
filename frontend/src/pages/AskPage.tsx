@@ -29,6 +29,7 @@ export function AskPage() {
     { label: string; status: 'done' | 'active' | 'pending' }[]
   >([]);
   const [lastResponse, setLastResponse] = useState<AskResponse | null>(null);
+  const [confirmationToken, setConfirmationToken] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   const sendQuestionRef = useRef<(question: string) => Promise<void>>(async () => {});
@@ -84,58 +85,84 @@ export function AskPage() {
 
     if (response.status === 'completed') {
       setLastResponse(response);
+      setConfirmationToken(null);
     } else if (response.status === 'awaiting_confirmation') {
       setLastResponse(response);
+      setConfirmationToken(response.confirmationToken ?? null);
     }
   };
 
-  const handleApprove = () => {
-    const approvedResponse: AskResponse = {
-      status: 'completed',
-      answer: 'Customer churn rate for Q3 is 4.2%, down from 5.8% in Q2. This represents 187 churned customers out of 4,452 active accounts. The improvement is attributed to the retention campaign launched in July.',
-      confidence: 'medium',
-      flags: [{ type: 'metric_pending', label: 'Metric was pending — approved for this session', severity: 'warning' }],
-      lineage: [
-        { name: 'customer_churn_rate', kind: 'metric' },
-        { name: 'Customer Profiles', kind: 'dataset' },
-      ],
-      plan_type: 'single_metric',
-      invariant: INVARIANT,
-      keyNumbers: [
-        { label: 'Churn Rate', value: '4.2%' },
-        { label: 'Churned', value: '187' },
-        { label: 'Active', value: '4,452' },
-      ],
-    };
+  const handleApprove = async () => {
+    const token = confirmationToken;
+    if (!token) return;
 
-    setLastResponse(approvedResponse);
-    setMessages((prev) => {
-      const updated = [...prev];
-      const lastAssistant = updated[updated.length - 1];
-      if (lastAssistant && lastAssistant.role === 'assistant') {
-        updated[updated.length - 1] = {
-          ...lastAssistant,
-          text: approvedResponse.answer,
-          response: approvedResponse,
-        };
-      }
-      return updated;
-    });
+    // Optimistic: show a loading state
+    setLoading(true);
+    const result = await apiClient.confirmAction(token, true);
+    setLoading(false);
+
+    if (result && result.status === 'approved') {
+      // Show approved response — backend only returns status, not full answer
+      const approvedResponse: AskResponse = {
+        status: 'completed',
+        answer: 'Action approved and executed. The requested metric was computed successfully.',
+        confidence: 'medium',
+        flags: [{ type: 'metric_pending', label: 'Metric was pending — approved for this session', severity: 'warning' }],
+        lineage: lastResponse?.lineage ?? [],
+        plan_type: lastResponse?.plan_type ?? 'single_metric',
+        invariant: result.invariant ?? INVARIANT,
+        caveat: lastResponse?.caveat,
+      };
+      setLastResponse(approvedResponse);
+      setConfirmationToken(null);
+      setMessages((prev) => {
+        const updated = [...prev];
+        const lastAssistant = updated[updated.length - 1];
+        if (lastAssistant && lastAssistant.role === 'assistant') {
+          updated[updated.length - 1] = {
+            ...lastAssistant,
+            text: approvedResponse.answer,
+            response: approvedResponse,
+          };
+        }
+        return updated;
+      });
+    } else {
+      // Error or null result
+      const errorResponse: AskResponse = {
+        status: 'error',
+        answer: 'Failed to approve — the confirmation may have expired or the backend is unavailable.',
+        confidence: 'low',
+        flags: [{ type: 'unknown_metric', label: 'Confirmation failed', severity: 'critical' }],
+        lineage: [],
+        plan_type: 'single_metric',
+        invariant: INVARIANT,
+      };
+      setLastResponse(errorResponse);
+    }
   };
 
-  const handleReject = () => {
+  const handleReject = async () => {
+    const token = confirmationToken;
+    if (!token) return;
+
+    setLoading(true);
+    const result = await apiClient.confirmAction(token, false);
+    setLoading(false);
+
     const deniedResponse: AskResponse = {
       status: 'denied',
       answer: '',
       confidence: 'low',
-      flags: [],
+      flags: [{ type: 'unknown_metric', label: 'Request rejected by user', severity: 'warning' }],
       lineage: [],
       plan_type: 'confirmation_required',
-      invariant: INVARIANT,
-      deniedReason: 'Request rejected by user. The metric customer_churn_rate was not executed. No data was accessed.',
+      invariant: result?.invariant ?? INVARIANT,
+      deniedReason: 'Request rejected by user. No data was accessed.',
     };
 
     setLastResponse(null);
+    setConfirmationToken(null);
     setMessages((prev) => {
       const updated = [...prev];
       const lastAssistant = updated[updated.length - 1];

@@ -49,6 +49,7 @@ export interface AskResponse {
   planSummary?: string;
   deniedReason?: string;
   steps?: { label: string; status: 'done' | 'active' | 'pending' }[];
+  confirmationToken?: string | null;
 }
 
 export interface ChatMessage {
