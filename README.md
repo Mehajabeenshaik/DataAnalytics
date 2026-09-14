@@ -1,6 +1,163 @@
 # DaAna
 
-**Governed AI for business data — without letting the model touch your database.**
+Governed analytics agent with a FastAPI backend and a React (Vite) frontend.
+
+The model does not generate or execute SQL or Python. It selects from an approved metric catalog and fixed tools. Execution is deterministic. Answers include confidence, lineage, and policy flags.
+
+---
+
+## Architecture
+
+```
+Browser (frontend/)
+  → POST /api/v1/session | upload | ask | ask/confirm
+FastAPI (backend/app/)
+  → plan (allowlisted) → policy critic → execute tools → verify → synthesize
+  → DuckDB / stats tools / metric catalog
+```
+
+| Layer | Role |
+|--------|------|
+| Planner / synthesizer | LLM, constrained to catalog + tool names |
+| Policy (`policy/`) | Pre-exec checks, confirmation, grounding, injection handling |
+| Execution | Deterministic metrics and stats tools |
+| Verification | System confidence and flags (not taken from the model alone) |
+| Tenants | API-key scoped sessions, quotas, audit |
+
+Core invariant (returned by the API):
+
+> The LLM never generates or executes SQL or Python. It may only select from human-approved metrics and fixed tools; all execution is deterministic and controlled by this system.
+
+---
+
+## Repository layout
+
+```
+backend/app/          # API, agent, catalog, tenant, policy
+backend/tests/        # pytest suite
+frontend/             # Vite + React + TypeScript UI
+eval/                 # trust / eval helpers
+samples/              # example CSV/XLSX
+docs/                 # security, pilot, SSO notes
+PRODUCTION.md         # production checklist
+```
+
+Historical phase notes live under `docs/archive/`. Runtime code is only under `backend/` and `frontend/`.
+
+---
+
+## Requirements
+
+- Python 3.11+ (3.12 used in CI)
+- Node 18+ for the frontend
+- Optional: Ollama (or another configured LLM provider)
+
+---
+
+## Backend setup
+
+```bash
+python -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+
+# required
+export JWT_SECRET_KEY=$(python -c "import secrets; print(secrets.token_hex(32))")
+
+# optional
+cp .env.example .env               # edit provider keys, CORS, etc.
+
+uvicorn backend.app.main:app --reload --host 127.0.0.1 --port 8001
+```
+
+Useful endpoints:
+
+| Method | Path | Notes |
+|--------|------|--------|
+| GET | `/health` | Liveness, phase, invariant |
+| GET | `/ready` | Readiness probes |
+| POST | `/api/v1/session` | Header `X-API-Key` |
+| POST | `/api/v1/upload` | Multipart file + `session_id` |
+| POST | `/api/v1/ask` | JSON: `session_id`, `question` |
+| POST | `/api/v1/ask/confirm` | Confirmation token approve/deny |
+
+Default dev API key is often `ak_demo_key_12345` (see tenant seed / `.env.example`). Do not use defaults in production.
+
+---
+
+## Frontend setup
+
+```bash
+cd frontend
+cp .env.development .env            # or edit in place
+npm install
+npm run dev
+```
+
+`frontend/.env.development` typically contains:
+
+```bash
+VITE_API_BASE_URL=http://127.0.0.1:8001
+VITE_API_KEY=ak_demo_key_12345
+```
+
+If `VITE_API_BASE_URL` is empty, the UI falls back to in-browser mocks.
+
+Open the URL Vite prints (usually `http://localhost:5173`). After sign-in, use **Ask** for questions. The trust panel shows confidence, lineage, and flags from the API response.
+
+---
+
+## Tests
+
+```bash
+export JWT_SECRET_KEY=pytest-test-secret-not-for-production-7f3a9b2e
+python -m pytest backend/tests -q
+```
+
+CI installs from `requirements.txt` and runs the backend suite (see `.github/workflows/ci.yml`). Some live-server scripts may be ignored intentionally.
+
+---
+
+## Configuration notes
+
+| Variable | Purpose |
+|----------|---------|
+| `JWT_SECRET_KEY` | Required; app refuses the placeholder secret |
+| `APP_ENV` | `development` \| `staging` \| `production` |
+| `TENANT_ISOLATION_ENABLED` | Should be `true` in production |
+| `DEMO_API_KEY` | Must be rotated in production |
+| `CORS_ORIGINS` | Comma-separated; avoid `*` in production |
+| `LLM_PROVIDER` | e.g. ollama / mock (see config) |
+
+See `PRODUCTION.md` before any real deployment.
+
+---
+
+## Development workflow
+
+1. Start backend on port 8001.  
+2. Start frontend with `VITE_API_BASE_URL` pointing at the backend.  
+3. Confirm in the browser Network tab: `session` → `upload` → `ask`.  
+4. Run pytest before pushing.
+
+CORS must allow the frontend origin (e.g. `http://localhost:5173`).
+
+---
+
+## What this project is not
+
+- Not a text-to-SQL product  
+- Not an unrestricted chatbot over your database  
+- Not a claim about specific unpublished model internals  
+
+It is a control plane around tool-using LLM calls: allowlists, verification, tenancy, and audit.
+
+---
+
+## License
+
+See `LICENSE` in the repository root.
+
 
 > **About / repo settings** — owner checklist (set once in GitHub → Settings → General):
 >
