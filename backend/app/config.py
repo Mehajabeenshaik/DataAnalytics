@@ -112,6 +112,12 @@ CORS_ORIGINS_RAW = os.getenv("CORS_ORIGINS", "*")
 CORS_ORIGINS = [o.strip() for o in CORS_ORIGINS_RAW.split(",") if o.strip()] or ["*"]
 CORS_ALLOW_ALL = "*" in CORS_ORIGINS
 
+# ── Phase 5: readiness store paths (env-overridable) ──────────────────────
+# TENANT_STORE_PATH / AUDIT_LOG_DIR let /ready probe the real writable
+# locations in any deployment layout. Defaults match the local tree.
+TENANT_STORE_PATH = os.getenv("TENANT_STORE_PATH", str(BASE_DIR / "data" / "tenants"))
+AUDIT_LOG_DIR = os.getenv("AUDIT_LOG_DIR", str(BASE_DIR / "data" / "audit"))
+
 # ── Environment ───────────────────────────────────────────────────────────
 # Normalized deployment environment: development | staging | production.
 # `ENV` is honoured as a fallback alias for CI/tooling that only sets ENV.

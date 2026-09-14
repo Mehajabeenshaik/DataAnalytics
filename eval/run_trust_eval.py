@@ -94,14 +94,15 @@ def get_eval_provider(name: str):
 
 
 def _resolve_data_path(case: dict) -> Path:
-    """Resolve the dataset path for a case (root or eval/fixtures)."""
+    """Resolve the dataset path for a case (samples/, root, or eval/fixtures)."""
     ds_name = case.get("dataset", "sample_sales_data.csv")
-    p = ROOT / ds_name
-    if p.exists():
-        return p
-    p = ROOT / "eval" / "fixtures" / ds_name
-    if p.exists():
-        return p
+    for candidate in (
+        ROOT / "samples" / ds_name,
+        ROOT / ds_name,
+        ROOT / "eval" / "fixtures" / ds_name,
+    ):
+        if candidate.exists():
+            return candidate
     raise FileNotFoundError(f"Dataset not found for case {case.get('id')}: {ds_name}")
 
 

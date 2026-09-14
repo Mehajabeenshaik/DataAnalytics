@@ -118,21 +118,22 @@ async def health():
 
 @app.get("/ready")
 async def ready():
-    """Readiness probe: writable tenant/audit stores."""
+    """Readiness probe: writable tenant/audit stores (env-overridable)."""
     import os as _os
+    from pathlib import Path as _Path
 
     from config import APP_ENV
 
     try:
-        from config import BASE_DIR
+        from config import TENANT_STORE_PATH as _TENANT_DEFAULT, AUDIT_LOG_DIR as _AUDIT_DEFAULT
     except ImportError:
-        from pathlib import Path as _P
-
-        BASE_DIR = str(_P(__file__).resolve().parents[2])
+        _TENANT_DEFAULT = str(_Path(__file__).resolve().parents[2] / "data" / "tenants")
+        _AUDIT_DEFAULT = str(_Path(__file__).resolve().parents[2] / "data" / "audit")
+    tenants = _Path(_os.getenv("TENANT_STORE_PATH", _TENANT_DEFAULT))
+    audit = _Path(_os.getenv("AUDIT_LOG_DIR", _AUDIT_DEFAULT))
     checks: dict = {}
-    for key, sub in (("tenant_store_ok", "data/tenants"), ("audit_path_ok", "data/audit")):
+    for key, p in (("tenant_store_ok", tenants), ("audit_path_ok", audit)):
         try:
-            p = Path(BASE_DIR) / sub
             p.mkdir(parents=True, exist_ok=True)
             ok = p.is_dir() and _os.access(p, _os.W_OK)
             checks[key] = bool(ok)

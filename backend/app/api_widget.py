@@ -15,35 +15,8 @@ import time as _time
 import uuid as _uuid
 from typing import Any as _Any
 
-
-def _phase5_log_ask(
-    *,
-    request_id: str | None = None,
-    tenant_id: str | None = None,
-    plan_type: str | None = None,
-    latency_ms: float = 0.0,
-    confidence: str | None = None,
-    flags: list | None = None,
-    status: str = "completed",
-    extra: dict | None = None,
-) -> None:
-    """Structured one-line log for an /ask cycle. Never log raw row payloads."""
-    payload: dict[str, _Any] = {
-        "request_id": request_id or _uuid.uuid4().hex,
-        "tenant_id": tenant_id,
-        "plan_type": plan_type,
-        "latency_ms": round(latency_ms, 2),
-        "confidence": confidence,
-        "flags": flags or [],
-        "status": status,
-    }
-    if extra:
-        for k, v in extra.items():
-            if isinstance(v, (str, int, float, bool)) or v is None:
-                payload[k] = v
-    logging.getLogger("daana.obs").info("ask %s", payload)
-
-
+# _phase5_log_ask is the canonical observability.log_ask (imported below).
+# Only plan metadata + status are logged — never raw PII or result rows.
 import uuid
 import traceback
 import tempfile
@@ -58,6 +31,7 @@ from pydantic import BaseModel
 from tenant import validate_api_key, WidgetTenant as Tenant
 from session_manager import SessionManager
 from data_source import DataSource
+from observability import Timer, log_ask as _phase5_log_ask
 from dataset_registry import DatasetRegistry
 from llm_provider import FallbackLLMProvider, get_provider
 from tenant_quotas import QuotaExceededError
