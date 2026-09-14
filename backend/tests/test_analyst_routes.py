@@ -26,7 +26,10 @@ from stats_tools import filtered_agg, run_stats_tool
 from verification import verify_answer
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_SAMPLE_CSV = _REPO_ROOT / "sample_sales_data.csv"
+# Sample CSV lives in samples/ after repo tidy (fallback to old root path).
+_SAMPLE_CSV = _REPO_ROOT / "samples" / "sample_sales_data.csv"
+if not _SAMPLE_CSV.exists():
+    _SAMPLE_CSV = _REPO_ROOT / "sample_sales_data.csv"
 
 JAN_TOTAL = 6040.50   # sum of sales for 2024-01 rows in sample_sales_data.csv
 FULL_TOTAL = 13390.50  # sum of ALL sales rows in sample_sales_data.csv
