@@ -174,3 +174,135 @@ def test_pii_masked_columns_property(pii_df):
         assert "revenue" not in ds.pii_masked_columns
         assert "region" not in ds.pii_masked_columns
         assert "order_id" not in ds.pii_masked_columns
+
+
+# ── Value-based NER false positives on plain id columns ───────────────────
+#
+# Presidio's spaCy NER flags short alphanumeric tokens like "ORD-1001" as
+# PERSON, and the old code masked a whole column on a SINGLE detection hit.
+# That masked plain identifier columns (e.g. order_id) that match no PII name
+# keyword. These tests stub the analyzer so the value-detection path is
+# exercised deterministically, with or without Presidio installed.
+
+class _Detected:
+    """Truthy stand-in for a Presidio RecognizerResult."""
+
+
+class _AlwaysDetects:
+    """Analyzer that reports a detection for every value given to it."""
+
+    def analyze(self, text=None, entities=None, language=None, **kwargs):
+        return [_Detected()]
+
+
+class _SelectiveAnalyzer:
+    """Analyzer that reports detections only for an explicit set of values."""
+
+    def __init__(self, hits):
+        self.hits = {str(h) for h in hits}
+
+    def analyze(self, text=None, entities=None, language=None, **kwargs):
+        return [_Detected()] if str(text) in self.hits else []
+
+
+class _FakeMasker:
+    """Stand-in PIIMasker: scan_text is all DataSource._mask_value needs."""
+
+    def scan_text(self, value):
+        return [_Detected()] if value else []
+
+
+@pytest.fixture
+def stub_pii(monkeypatch):
+    """Install a fake analyzer + masker for DataSource PII detection."""
+    import pii_masker
+
+    def _install(analyzer):
+        monkeypatch.setattr(pii_masker, "_get_analyzer", lambda: analyzer)
+        monkeypatch.setattr(pii_masker, "PIIMasker", _FakeMasker)
+
+    return _install
+
+
+def test_id_like_column_not_masked_even_if_every_value_detects(stub_pii):
+    """order_id (ORD-1001...) must never be masked by value-detection alone."""
+    stub_pii(_AlwaysDetects())
+    ids = [f"ORD-{1000 + i}" for i in range(20)]
+
+    ds = DataSource()
+    ds.load_dataframe(pd.DataFrame({"order_id": ids, "amount": [1.0] * 20}))
+
+    assert "order_id" not in ds.pii_masked_columns
+    assert list(ds.query('SELECT "order_id" FROM data')["order_id"]) == ids
+
+
+def test_id_shape_names_are_guarded_without_suffix(stub_pii):
+    """id/sku/code-named columns are guarded by NAME, not just by value shape."""
+    stub_pii(_AlwaysDetects())
+
+    ds = DataSource()
+    ds.load_dataframe(pd.DataFrame({
+        "sku": ["alpha", "beta", "gamma"],
+        "code": ["one", "two", "three"],
+    }))
+
+    assert "sku" not in ds.pii_masked_columns
+    assert "code" not in ds.pii_masked_columns
+
+
+def test_single_detection_hit_does_not_mask_a_column(stub_pii):
+    """One hit out of 20 samples is a false positive, not a PII column."""
+    stub_pii(_SelectiveAnalyzer({"alice@example.com"}))
+    values = [f"note text {i}" for i in range(19)] + ["alice@example.com"]
+
+    ds = DataSource()
+    ds.load_dataframe(pd.DataFrame({"notes": values}))
+
+    assert "notes" not in ds.pii_masked_columns
+
+
+def test_two_detection_hits_do_mask_a_column(stub_pii):
+    """Two-or-more hits in a non-id column still masks the column."""
+    stub_pii(_SelectiveAnalyzer({"alice@example.com", "bob@example.com"}))
+    values = [f"note text {i}" for i in range(18)] + [
+        "alice@example.com", "bob@example.com",
+    ]
+
+    ds = DataSource()
+    ds.load_dataframe(pd.DataFrame({"notes": values}))
+
+    assert "notes" in ds.pii_masked_columns
+    masked = ds.query('SELECT "notes" FROM data')["notes"].tolist()
+    assert "alice@example.com" not in masked
+
+
+def test_name_keyword_column_still_masked_with_id_shaped_values(stub_pii):
+    """The id-shape guard must not weaken genuine keyword-based detection."""
+    stub_pii(_AlwaysDetects())
+
+    ds = DataSource()
+    ds.load_dataframe(pd.DataFrame({
+        "customer_name": ["John Smith", "Jane Doe", "Bob Brown"],
+        "order_id": ["ORD-1001", "ORD-1002", "ORD-1003"],
+    }))
+
+    assert "customer_name" in ds.pii_masked_columns
+    assert "order_id" not in ds.pii_masked_columns
+    masked = ds.query('SELECT "customer_name" FROM data')["customer_name"].tolist()
+    assert "John Smith" not in masked
+
+
+def test_sample_csv_order_id_is_not_masked():
+    """Regression: the shipped sample dataset's order_id must stay usable."""
+    from pathlib import Path
+
+    sample = Path(__file__).resolve().parents[2] / "samples" / "sample_sales_data.csv"
+    if not sample.exists():
+        pytest.skip(f"sample dataset missing: {sample}")
+
+    ds = DataSource()
+    ds.load_file(str(sample))
+
+    assert "order_id" not in ds.pii_masked_columns
+    ids = ds.query('SELECT "order_id" FROM data')["order_id"].tolist()
+    assert ids and all(str(v).startswith("ORD-") for v in ids)

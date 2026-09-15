@@ -222,7 +222,11 @@ def test_run_stats_tool_unknown_tool(ds):
 
 
 def test_allowed_stats_tools_catalog_size():
-    assert len(ALLOWED_STATS_TOOLS) == 8
+    # 8 original tools + categorical_filtered_agg + percentage_of_total, added
+    # to answer "count of X where category = Y" and "% of total from X" — shapes
+    # the month-only filtered_agg could not express (they used to fall through
+    # to an unfiltered total).
+    assert len(ALLOWED_STATS_TOOLS) == 10
 
 
 def test_valid_tool_names():
@@ -235,6 +239,8 @@ def test_valid_tool_names():
         "trend",
         "anomaly_detect",
         "filtered_agg",
+        "categorical_filtered_agg",
+        "percentage_of_total",
     }
     assert VALID_TOOL_NAMES == expected
 
@@ -247,3 +253,124 @@ def test_each_tool_has_name_description_args():
         assert isinstance(tool["name"], str)
         assert isinstance(tool["description"], str)
         assert isinstance(tool["args"], dict)
+
+
+# ── categorical_filtered_agg (item: "count of X where category = Y") ──────
+#
+# Before this tool existed the catalog could only filter by MONTH, so a
+# category-filtered question ("how many orders are in the Electronics
+# category?") fell through to an unfiltered aggregate and returned the whole
+# table's row count with high confidence.
+
+def test_categorical_filtered_agg_count(ds):
+    """Count = number of matching ROWS (not non-null values of value_col)."""
+    from stats_tools import categorical_filtered_agg
+
+    assert categorical_filtered_agg(ds, "revenue", "count", "region", "North") == 2
+    assert categorical_filtered_agg(ds, "revenue", "count", "region", "South") == 2
+
+
+def test_categorical_filtered_agg_sum_and_mean(ds):
+    from stats_tools import categorical_filtered_agg
+
+    # revenue: North -> 100 + 300 = 400 ; South -> 200 + 400 = 600
+    assert categorical_filtered_agg(ds, "revenue", "sum", "region", "North") == pytest.approx(400.0)
+    assert categorical_filtered_agg(ds, "revenue", "mean", "region", "South") == pytest.approx(300.0)
+    assert categorical_filtered_agg(ds, "revenue", "max", "region", "South") == pytest.approx(400.0)
+    assert categorical_filtered_agg(ds, "revenue", "min", "region", "North") == pytest.approx(100.0)
+
+
+def test_categorical_filtered_agg_defaults_to_count(ds):
+    from stats_tools import categorical_filtered_agg
+
+    assert categorical_filtered_agg(ds, "revenue", None, "region", "East") == 1
+
+
+def test_categorical_filtered_agg_unknown_value_declines(ds):
+    """A value that matches no rows must raise — never return 0 or the total."""
+    from stats_tools import categorical_filtered_agg
+
+    with pytest.raises(ValueError, match="No rows found"):
+        categorical_filtered_agg(ds, "revenue", "count", "region", "Furniture-XL")
+
+
+def test_categorical_filtered_agg_invalid_agg(ds):
+    from stats_tools import categorical_filtered_agg
+
+    with pytest.raises(ValueError, match="agg must be"):
+        categorical_filtered_agg(ds, "revenue", "median", "region", "North")
+
+
+def test_categorical_filtered_agg_unknown_column(ds):
+    from stats_tools import categorical_filtered_agg
+
+    with pytest.raises(ValueError, match="not found"):
+        categorical_filtered_agg(ds, "revenue", "count", "nonexistent_col", "x")
+
+
+def test_categorical_filtered_agg_non_numeric_value_col(ds):
+    from stats_tools import categorical_filtered_agg
+
+    with pytest.raises(ValueError, match="not numeric"):
+        categorical_filtered_agg(ds, "region", "sum", "category", "A")
+
+
+def test_run_stats_tool_dispatches_categorical_filtered_agg(ds):
+    result = run_stats_tool(ds, "categorical_filtered_agg", {
+        "value_col": "revenue", "agg": "count",
+        "filter_col": "region", "filter_value": "North",
+    })
+    assert result == 2
+
+
+# ── percentage_of_total (item: "% of total sales from X") ─────────────────
+
+def test_percentage_of_total(ds):
+    from stats_tools import percentage_of_total
+
+    # North revenue = 400 of 1400 total = 28.57%
+    assert percentage_of_total(ds, "revenue", "region", "North") == pytest.approx(28.57, abs=0.01)
+
+
+def test_percentage_of_total_is_share_of_whole_table(ds):
+    from stats_tools import percentage_of_total
+
+    total = float(ds.query('SELECT SUM("revenue") AS v FROM data').iloc[0, 0])
+    assert total == pytest.approx(1400.0)
+    # category A revenue = 100 + 300 + 400 = 800 -> 57.14% of 1400
+    assert percentage_of_total(ds, "revenue", "category", "A") == pytest.approx(
+        round(100.0 * 800.0 / total, 2)
+    )
+
+
+def test_percentage_of_total_unknown_value_declines(ds):
+    from stats_tools import percentage_of_total
+
+    with pytest.raises(ValueError, match="No rows found"):
+        percentage_of_total(ds, "revenue", "region", "Furniture-XL")
+
+
+def test_percentage_of_total_zero_total_declines(ds):
+    """An empty denominator must refuse, not divide by zero."""
+    ds.load_dataframe(pd.DataFrame({
+        "region": ["North", "South"],
+        "revenue": [0.0, 0.0],
+    }))
+    from stats_tools import percentage_of_total
+
+    with pytest.raises(ValueError, match="zero/empty"):
+        percentage_of_total(ds, "revenue", "region", "North")
+
+
+def test_percentage_of_total_unknown_column(ds):
+    from stats_tools import percentage_of_total
+
+    with pytest.raises(ValueError, match="not found"):
+        percentage_of_total(ds, "revenue", "nonexistent_col", "x")
+
+
+def test_run_stats_tool_dispatches_percentage_of_total(ds):
+    result = run_stats_tool(ds, "percentage_of_total", {
+        "value_col": "revenue", "filter_col": "region", "filter_value": "North",
+    })
+    assert result == pytest.approx(28.57, abs=0.01)

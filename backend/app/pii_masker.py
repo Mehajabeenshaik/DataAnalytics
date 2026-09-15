@@ -79,7 +79,15 @@ def _get_analyzer():
             "models": [{"lang_code": "en", "model_name": "en_core_web_sm"}],
         })
         _analyzer = AnalyzerEngine(nlp_engine=provider.create_engine())
-    except Exception as e:
+    except (Exception, SystemExit) as e:
+        # spaCy's model auto-download path (spacy.cli.download.download_model)
+        # calls sys.exit(ret.returncode) when the `en_core_web_sm` model is
+        # missing and cannot be fetched. SystemExit derives from BaseException,
+        # NOT Exception, so `except Exception` does NOT catch it — it would
+        # propagate up through data_source._detect_and_mask_pii() and the
+        # FastAPI route handler and kill the whole ASGI process, taking down
+        # every other tenant's session. Catching it here degrades gracefully:
+        # PII value-detection is disabled, column-name masking still runs.
         print(f"WARNING: Could not initialize Presidio analyzer: {e}")
         print("Run: python -m spacy download en_core_web_sm")
         return None

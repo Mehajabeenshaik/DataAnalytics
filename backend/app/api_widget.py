@@ -41,6 +41,7 @@ import stats_tools
 from data_quality import build_quality_report
 from agent_phase4 import run_governed_ask, INVARIANT
 from policy import get_confirmation_manager
+from data_export import EXPORT_ACTION_TYPE, export_masked_csv
 
 widget_router = APIRouter(tags=["widget"])
 
@@ -578,13 +579,38 @@ async def ask_confirm(
     if resolved is None:
         raise HTTPException(status_code=404, detail="Confirmation token not found or expired")
 
-    return {
+    payload = {
         "status": "approved" if resolved.status == "approved" else "rejected",
         "message": "Action approved." if resolved.status == "approved" else "Action rejected.",
         "action_type": resolved.action_type,
         "invariant": INVARIANT,
         "policy": {"phase": 4, "enforced": True},
     }
+
+    # An APPROVED export is materialized here — after human approval, never
+    # before. The dataset is re-resolved from the originating session (the
+    # same tenant-isolation check as /ask) and its values are already
+    # PII-masked from ingest, so no raw upload value can be exported.
+    if resolved.status == "approved" and resolved.action_type == EXPORT_ACTION_TYPE:
+        details = resolved.plan_details or {}
+        session = _widget_sessions.get(details.get("session_id"))
+        ds = None
+        if session and session.get("tenant_key") == tenant.api_key:
+            try:
+                ds = session["registry"].get(details.get("dataset"))
+            except Exception:
+                ds = None
+        if ds is None:
+            payload["export"] = None
+            payload["message"] = (
+                "Action approved, but the export could not be produced: the "
+                "originating session or dataset is no longer available. Re-run "
+                "the export request from an active session."
+            )
+        else:
+            payload["export"] = export_masked_csv(ds)
+
+    return payload
 
 
 @widget_router.post("/api/v1/ask/stream")

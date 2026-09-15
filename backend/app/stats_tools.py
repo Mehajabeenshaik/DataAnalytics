@@ -107,6 +107,42 @@ ALLOWED_STATS_TOOLS: list[dict] = [
             "month": "int 1-12",
         },
     },
+    {
+        "name": "categorical_filtered_agg",
+        "description": (
+            "Aggregate (sum/mean/count/max/min) of a numeric column over rows "
+            "filtered to a single value of a categorical column, e.g. "
+            "'count of orders where category = Electronics'."
+        ),
+        "synonyms": [
+            "how many are",
+            "count of orders in",
+            "total for category",
+            "filtered by",
+            "where category equals",
+            "orders in the * category",
+        ],
+        "args": {
+            "value_col": "numeric column name to aggregate (row-count proxy for a pure count)",
+            "agg": '"sum", "mean", "count", "max", or "min"',
+            "filter_col": "categorical column name to filter on",
+            "filter_value": "the value filter_col must equal",
+        },
+    },
+    {
+        "name": "percentage_of_total",
+        "description": (
+            "What percentage of the total (across all rows) does a single "
+            "categorical value's aggregate represent, e.g. '% of sales from "
+            "Electronics'."
+        ),
+        "synonyms": ["percent of total", "% of total", "share of", "proportion of"],
+        "args": {
+            "value_col": "numeric column to aggregate (usually sum)",
+            "filter_col": "categorical column to filter on",
+            "filter_value": "the value to compute the share for",
+        },
+    },
 ]
 
 
@@ -401,6 +437,95 @@ def filtered_agg(
     return float(val)
 
 
+def categorical_filtered_agg(
+    ds: DataSource,
+    value_col: str,
+    agg: str = "count",
+    filter_col: str = "",
+    filter_value: str = "",
+) -> float | int:
+    """Aggregate ``value_col`` over rows where ``filter_col == filter_value``.
+
+    This is the categorical counterpart of :func:`filtered_agg` (which only
+    filters by month). It answers questions like "how many orders are in the
+    Electronics category?" — a question the month-only tool could not express,
+    which previously let the planner fall back to an *unfiltered* total and
+    return a confidently wrong number.
+
+    Raises ValueError — which the caller surfaces as a decline — when the
+    filter value matches zero rows, so callers can never silently substitute
+    an unfiltered aggregate for a filtered one.
+    """
+    _validate_column(ds, value_col)
+    _validate_column(ds, filter_col)
+
+    agg_lower = (agg or "count").lower()
+    if agg_lower not in ("sum", "mean", "count", "max", "min"):
+        raise ValueError(f"agg must be 'sum','mean','count','max','min', got '{agg}'")
+
+    # Existence check FIRST: a filter value that matches zero rows must be a
+    # decline, never a fake 0 and never the unfiltered total.
+    n_rows = ds.query(
+        f'SELECT COUNT(*) AS n FROM {ds.table_name} WHERE "{filter_col}" = ?',
+        [str(filter_value)],
+    ).iloc[0, 0]
+    if not n_rows:
+        raise ValueError(f"No rows found where '{filter_col}' = '{filter_value}'.")
+
+    # Pure count = number of matching ROWS (COUNT(*)), not non-null values of
+    # value_col — "how many orders" must be exact even if the proxy column
+    # has nulls.
+    if agg_lower == "count":
+        return int(n_rows)
+
+    if not _is_numeric(ds, value_col):
+        raise ValueError(
+            f"'{value_col}' is not numeric. agg '{agg_lower}' requires a numeric value column."
+        )
+
+    sql_agg = {"sum": "SUM", "mean": "AVG", "max": "MAX", "min": "MIN"}[agg_lower]
+    df = ds.query(
+        f'SELECT {sql_agg}("{value_col}") AS v FROM {ds.table_name} '
+        f'WHERE "{filter_col}" = ?',
+        [str(filter_value)],
+    )
+    val = df.iloc[0, 0]
+    if val is None or pd.isna(val):
+        raise ValueError(f"No rows found where '{filter_col}' = '{filter_value}'.")
+    return float(val)
+
+
+def percentage_of_total(
+    ds: DataSource,
+    value_col: str,
+    filter_col: str,
+    filter_value: str,
+) -> float:
+    """Percentage of the SUM of ``value_col`` that comes from rows where
+    ``filter_col == filter_value`` (e.g. "% of sales from Electronics").
+
+    Raises ValueError when the total is zero/empty or the filter value matches
+    no rows, so a share is never fabricated from an empty denominator.
+    """
+    _validate_column(ds, value_col)
+    _validate_column(ds, filter_col)
+    if not _is_numeric(ds, value_col):
+        raise ValueError(f"'{value_col}' is not numeric. percentage_of_total requires a numeric value column.")
+
+    total = ds.query(f'SELECT SUM("{value_col}") AS v FROM {ds.table_name}').iloc[0, 0]
+    if total is None or pd.isna(total) or float(total) == 0.0:
+        raise ValueError(f"Cannot compute percentage: total of '{value_col}' is zero/empty.")
+
+    part = ds.query(
+        f'SELECT SUM("{value_col}") AS v FROM {ds.table_name} WHERE "{filter_col}" = ?',
+        [str(filter_value)],
+    ).iloc[0, 0]
+    if part is None or pd.isna(part):
+        raise ValueError(f"No rows found where '{filter_col}' = '{filter_value}'.")
+
+    return round(100.0 * float(part) / float(total), 2)
+
+
 def anomaly_detect(ds: DataSource, value_col: str, threshold: float = 2.0) -> pd.DataFrame:
     """Identify statistical outliers/anomalies in a numeric column via Z-score."""
     _validate_column(ds, value_col)
@@ -464,6 +589,21 @@ def run_stats_tool(ds: DataSource, tool_name: str, args: dict) -> Any:
             args.get("agg", "sum"),
             args.get("date_col"),
             args.get("month"),
+        )
+    elif tool_name == "categorical_filtered_agg":
+        return categorical_filtered_agg(
+            ds,
+            args["value_col"],
+            args.get("agg", "count"),
+            args["filter_col"],
+            args["filter_value"],
+        )
+    elif tool_name == "percentage_of_total":
+        return percentage_of_total(
+            ds,
+            args["value_col"],
+            args["filter_col"],
+            args["filter_value"],
         )
     else:
         raise ValueError(f"Tool '{tool_name}' not implemented.")

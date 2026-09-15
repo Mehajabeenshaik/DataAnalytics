@@ -12,6 +12,7 @@ PII Protection:
 
 from __future__ import annotations
 
+import re
 import threading
 import time
 import uuid
@@ -32,6 +33,68 @@ from sqlalchemy import create_engine, text
 _CONNECT_TIMEOUT_POSTGRES = 10   # seconds
 _CONNECT_TIMEOUT_MYSQL = 10      # seconds
 _STATEMENT_TIMEOUT_POSTGRES = 30_000  # milliseconds (statement_timeout GUC)
+
+
+# ---------------------------------------------------------------------------
+# Identifier safety.
+#
+# Uploaded file headers become DuckDB column identifiers, and downstream code
+# (stats_tools.py) interpolates those names directly into SQL *identifier*
+# position inside double quotes, e.g.  f'SELECT SUM("{value_col}") ...'.
+# _validate_column() only checks the name EXISTS in the profile — it does not
+# check the name is SAFE.  Because the profile is built from the raw uploaded
+# header, a column literally named
+#     region" AS key FROM data; DROP TABLE data; --
+# passes validation and breaks out of the quoting (DuckDB executes
+# multi-statement strings), letting an untrusted CSV header run arbitrary DDL.
+#
+# The "the LLM never writes SQL" invariant does not cover this: the injection
+# surface is the uploaded file, not the model.  The fix is to sanitize the
+# identifier ONCE at ingest, in one place, so no downstream f-string can ever
+# see a header that isn't [A-Za-z0-9_].
+# ---------------------------------------------------------------------------
+_IDENT_RE = re.compile(r"[^A-Za-z0-9_]")
+
+# Id-shaped *values* (ORD-1001, SKU123, C001...) — used to suppress PII
+# false-positives from Presidio's value-based NER.
+_ID_LIKE_RE = re.compile(r"^[A-Za-z]{0,5}-?\d+[A-Za-z0-9\-]*$")
+
+# Column names that are identifiers by convention rather than by value shape.
+_ID_NAME_RE = re.compile(r"(^id$|_id$|^sku$|^code$)", re.IGNORECASE)
+
+
+def _sanitize_column_name(raw: str, seen: set[str]) -> str:
+    """Turn an arbitrary uploaded header into a safe SQL identifier.
+
+    - replaces anything that isn't [A-Za-z0-9_] with "_"
+    - ensures the result doesn't start with a digit
+    - de-duplicates against names already assigned in this load
+    """
+    name = _IDENT_RE.sub("_", str(raw)).strip("_") or "col"
+    if name[0].isdigit():
+        name = f"col_{name}"
+    base = name
+    i = 1
+    while name.lower() in seen:
+        i += 1
+        name = f"{base}_{i}"
+    seen.add(name.lower())
+    return name
+
+
+def _looks_like_id(col_name: str, samples: list[str]) -> bool:
+    """True if the column name or most sample values look like an identifier
+    (ORD-1001, SKU123, ...) rather than a person/PII value.
+
+    Applied BEFORE value-based NER so short alphanumeric ids such as
+    "ORD-1001" are not false-positived as PERSON by the spaCy pipeline.
+    """
+    if _ID_NAME_RE.search(col_name or ""):
+        return True
+    if not samples:
+        return False
+    id_like = sum(1 for s in samples if _ID_LIKE_RE.match(str(s).strip()))
+    return id_like / len(samples) > 0.7  # most samples look id-shaped
 
 
 class ColumnProfile(BaseModel):
@@ -65,6 +128,9 @@ class DataSource:
         self._allowed_filter_columns: list[str] = []
         self._metrics_cache: dict | None = None
         self._pii_masked_columns: set[str] = set()
+        # Maps the sanitized SQL identifier back to the original uploaded
+        # header, so the UI / metric catalog can still show a display label.
+        self._original_column_names: dict[str, str] = {}
         self._instance_id = uuid.uuid4().hex
 
         # Live-connection state (set by connect_live())
@@ -118,14 +184,22 @@ class DataSource:
 
             if not has_pii:
                 samples = df[col].dropna().astype(str).head(20).tolist()
-                if samples:
+                # Guard: never run value-based NER on id-shaped columns. Short
+                # alphanumeric tokens like "ORD-1001" false-positive as PERSON
+                # in the spaCy pipeline, which used to mask whole id columns
+                # (e.g. order_id) even though their names match no PII keyword.
+                if samples and not _looks_like_id(col, samples):
+                    hits = 0
                     for sample in samples:
                         detections = analyzer.analyze(
                             text=sample, entities=pii_entities, language="en"
                         )
                         if detections:
-                            has_pii = True
-                            break
+                            hits += 1
+                    # Require more than one hit before masking a whole column on
+                    # value-detection alone — a single detection is far more
+                    # likely to be a false positive than genuine PII.
+                    has_pii = hits >= 2
 
             if has_pii:
                 df[col] = df[col].apply(
@@ -205,6 +279,19 @@ class DataSource:
     def load_dataframe(self, df: pd.DataFrame, table_name: str = "data") -> None:
         self.table_name = table_name
         df = df.copy()
+
+        # Sanitize headers BEFORE they ever become SQL identifiers anywhere
+        # downstream (stats_tools.py interpolates column names into f-strings).
+        # An untrusted header such as  region" AS key FROM data; DROP TABLE data; --
+        # would otherwise break out of the "..." quoting and run DDL.
+        seen: set[str] = set()
+        rename_map = {c: _sanitize_column_name(c, seen) for c in df.columns}
+        if any(k != v for k, v in rename_map.items()):
+            # Keep the mapping so the UI / metric catalog can still show the
+            # original header as a display label.
+            self._original_column_names = {v: k for k, v in rename_map.items()}
+            df = df.rename(columns=rename_map)
+
         df = self._detect_and_mask_pii(df)
         for col in df.columns:
             if df[col].dtype == "string" or str(df[col].dtype).startswith("str"):
@@ -215,8 +302,20 @@ class DataSource:
         self._build_profile()
 
     def load_sqlite(self, db_path: str, query: str = "SELECT * FROM orders_enriched") -> None:
-        """Bridge to an existing SQLite database."""
+        """Bridge to an existing SQLite database.
+
+        SECURITY: ``query`` MUST come from trusted config (admin/dev), never
+        from end-user or API input. The ``rewritten_query`` below is a
+        table-name rewrite that adds the ``src.`` attachment prefix — it is
+        NOT a sanitizer and provides NO protection against a malicious
+        ``query`` string. If this ever needs to accept a query from a request
+        body, it must be replaced with a real allowlist/parser, not regex
+        rewriting.
+        """
         import re
+
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("load_sqlite: 'query' must be a non-empty trusted SQL string")
 
         norm_path = db_path.replace("\\", "/")
 
@@ -225,17 +324,17 @@ class DataSource:
 
             stripped = query.strip()
             if not re.search(r"\s", stripped):
-                safe_query = f"SELECT * FROM src.{stripped}"
+                rewritten_query = f"SELECT * FROM src.{stripped}"
             elif re.match(r"^\s*SELECT\b", stripped, re.IGNORECASE):
-                safe_query = re.sub(
+                rewritten_query = re.sub(
                     r"(\bFROM\s+|\bJOIN\s+)([A-Za-z_][A-Za-z0-9_]*)",
                     r"\1src.\2",
                     stripped,
                 )
             else:
-                safe_query = f"SELECT * FROM src.{stripped}"
+                rewritten_query = f"SELECT * FROM src.{stripped}"
 
-            self.con.execute(f"CREATE OR REPLACE TABLE data AS {safe_query}")
+            self.con.execute(f"CREATE OR REPLACE TABLE data AS {rewritten_query}")
             self.table_name = "data"
             self._build_profile()
         except Exception:

@@ -82,6 +82,67 @@ def _extract_metric_catalog(prompt: str) -> set[str]:
     return names
 
 
+# ── Synthesizer helpers: render results, not raw prompt text ──────────────
+
+def _fmt_num(value) -> str:
+    """Format a result number without leaking structural tokens or currency
+    guesses: ints get thousands separators, floats get 2 decimals."""
+    if isinstance(value, bool):
+        return str(value)
+    if isinstance(value, int):
+        return f"{value:,}"
+    try:
+        fvalue = float(value)
+    except (TypeError, ValueError):
+        return str(value)
+    if fvalue.is_integer():
+        return f"{fvalue:,.0f}"
+    return f"{fvalue:,.2f}"
+
+
+def _result_label(entry: dict) -> str:
+    """Human-readable label for a result entry, derived from its args.
+
+    Tool names and arg keys are internal identifiers, so they are rendered as
+    prose ('count of sales where category = Electronics') rather than leaking
+    as-is or — worse — leaking the entry's structural step_id.
+    """
+    target = entry.get("target") or "result"
+    args = entry.get("args") or {}
+    if target == "categorical_filtered_agg":
+        return (
+            f"{args.get('agg', 'count')} of {args.get('value_col', 'rows')} "
+            f"where {args.get('filter_col')} = {args.get('filter_value')}"
+        )
+    if target == "percentage_of_total":
+        return (
+            f"share of {args.get('value_col')} from "
+            f"{args.get('filter_col')} = {args.get('filter_value')}"
+        )
+    return str(target).replace("_", " ")
+
+
+def _render_result(entry: dict) -> str | None:
+    """Render one serialized result entry as a short clause (or None)."""
+    if entry.get("error"):
+        return None
+    value = entry.get("result")
+    label = _result_label(entry)
+    if isinstance(value, dict):
+        items = [f"{k}: {_fmt_num(v)}" for k, v in list(value.items())[:4]]
+        return f"{label} — " + "; ".join(items) if items else None
+    if isinstance(value, list):
+        if value and isinstance(value[0], dict):
+            row = value[0]
+            items = [f"{k}: {_fmt_num(v)}" for k, v in list(row.items())[:4]]
+            return f"{label} (first row) — " + "; ".join(items) if items else None
+        items = [_fmt_num(v) for v in value[:4]]
+        return f"{label}: " + ", ".join(items) if items else None
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return f"{label}: {_fmt_num(value)}"
+    return None
+
+
 class MockTrustProvider(LLMProvider):
     """Deterministic keyword-based LLM stub.
 
@@ -108,27 +169,32 @@ class MockTrustProvider(LLMProvider):
     # ── Synthesizer helper: include numbers from the results ──────────────
 
     def _synthesize(self, prompt: str) -> str:
-        """Build a synthesizer JSON response that includes numbers from the
-        serialized results so `must_include_numbers` golden expectations pass.
+        """Build a synthesizer JSON response from the serialized results.
+
+        The Results block is parsed as JSON and only each entry's `result`
+        value is rendered — never structural fields (step_id, action) and
+        never a dev-only marker — so the answer text reads like a real
+        synthesizer answer. Numbers are still included so the golden
+        `must_include_numbers` expectations pass.
         """
-        # Try to find numeric values in the Results JSON block (a JSON array).
-        numbers_found = []
+        clauses: list[str] = []
         m = re.search(r"Results:\n(\[.*)$", prompt, re.DOTALL)
         if m:
-            for tok in re.findall(r"\d+\.?\d*", m.group(1)):
-                try:
-                    f = float(tok)
-                    if abs(f) > 0 and f.is_integer() and len(numbers_found) < 3:
-                        numbers_found.append(f"${f:,.0f}" if f >= 100 else f"{f:,.0f}")
-                    elif abs(f) > 0 and len(numbers_found) < 3:
-                        numbers_found.append(f"{f:,.2f}")
-                except ValueError:
-                    continue
+            try:
+                entries = json.loads(m.group(1))
+            except (json.JSONDecodeError, ValueError):
+                entries = []
+            if isinstance(entries, list):
+                for entry in entries:
+                    if isinstance(entry, dict):
+                        clause = _render_result(entry)
+                        if clause:
+                            clauses.append(clause)
 
-        if numbers_found:
-            answer = "Based on the data, the key result is " + ", ".join(numbers_found) + " (mock)."
+        if clauses:
+            answer = "Based on the data: " + "; ".join(clauses) + "."
         else:
-            answer = "Mock grounded answer based on tool results only (no numeric values found)."
+            answer = "No numeric result was produced by the tools."
 
         return json.dumps({
             "answer": answer,

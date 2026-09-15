@@ -108,3 +108,88 @@ def test_vault_file_is_encrypted_at_rest():
     finally:
         if os.path.exists(tmp_vault_path):
             os.unlink(tmp_vault_path)
+
+
+# ── Analyzer init must survive spaCy's SystemExit (process-kill guard) ─────
+#
+# When the en_core_web_sm model is missing, Presidio's NlpEngineProvider tries
+# to auto-download it; spacy.cli.download.download_model() then calls
+# sys.exit(returncode), which raises SystemExit. SystemExit derives from
+# BaseException, NOT Exception, so `except Exception` does not catch it — it
+# propagated out of _get_analyzer(), through DataSource._detect_and_mask_pii(),
+# and killed the whole ASGI process (every tenant, not just the uploader).
+
+class _ExplodingNlpProvider:
+    """Stands in for NlpEngineProvider whose model download fails."""
+
+    def __init__(self, nlp_configuration=None, *args, **kwargs):
+        self.nlp_configuration = nlp_configuration
+
+    def create_engine(self):
+        raise SystemExit(1)
+
+
+class _WorkingNlpProvider:
+    """Stands in for a NlpEngineProvider that loads the model successfully."""
+
+    def __init__(self, nlp_configuration=None, *args, **kwargs):
+        self.nlp_configuration = nlp_configuration
+
+    def create_engine(self):
+        return {"engine": "fake"}
+
+
+def test_get_analyzer_returns_none_on_systemexit(monkeypatch):
+    """A failed spaCy model download must disable PII NER, not kill the process."""
+    import pii_masker
+
+    monkeypatch.setattr(pii_masker, "_analyzer", None)
+    monkeypatch.setattr(pii_masker, "PRESIDIO_AVAILABLE", True)
+    monkeypatch.setattr(pii_masker, "NlpEngineProvider", _ExplodingNlpProvider)
+    monkeypatch.setattr(pii_masker, "AnalyzerEngine", lambda **kwargs: object())
+
+    # Must return None (graceful degradation) and must NOT raise SystemExit.
+    assert pii_masker._get_analyzer() is None
+
+
+def test_get_analyzer_returns_none_on_generic_error(monkeypatch):
+    """Any other init failure is also non-fatal."""
+    import pii_masker
+
+    class _Boom(_ExplodingNlpProvider):
+        def create_engine(self):
+            raise RuntimeError("no model")
+
+    monkeypatch.setattr(pii_masker, "_analyzer", None)
+    monkeypatch.setattr(pii_masker, "PRESIDIO_AVAILABLE", True)
+    monkeypatch.setattr(pii_masker, "NlpEngineProvider", _Boom)
+    monkeypatch.setattr(pii_masker, "AnalyzerEngine", lambda **kwargs: object())
+
+    assert pii_masker._get_analyzer() is None
+
+
+def test_get_analyzer_still_returns_engine_on_success(monkeypatch):
+    """The added SystemExit handling must not swallow a successful init."""
+    import pii_masker
+
+    sentinel = object()
+    monkeypatch.setattr(pii_masker, "_analyzer", None)
+    monkeypatch.setattr(pii_masker, "PRESIDIO_AVAILABLE", True)
+    monkeypatch.setattr(pii_masker, "NlpEngineProvider", _WorkingNlpProvider)
+    monkeypatch.setattr(
+        pii_masker, "AnalyzerEngine", lambda **kwargs: sentinel
+    )
+
+    assert pii_masker._get_analyzer() is sentinel
+    # Cached for subsequent callers.
+    assert pii_masker._get_analyzer() is sentinel
+
+
+def test_get_analyzer_not_called_when_presidio_missing(monkeypatch):
+    """Without Presidio installed, init is skipped entirely."""
+    import pii_masker
+
+    monkeypatch.setattr(pii_masker, "_analyzer", None)
+    monkeypatch.setattr(pii_masker, "PRESIDIO_AVAILABLE", False)
+
+    assert pii_masker._get_analyzer() is None

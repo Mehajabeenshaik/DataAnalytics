@@ -43,6 +43,12 @@ from tenant_quotas import check_and_consume_query_quota
 from audit_logger import log_action
 from stats_tools import VALID_TOOL_NAMES
 from model_tools import VALID_MODEL_TOOL_NAMES
+from data_export import (
+    EXPORT_ACTION_TYPE,
+    EXPORT_FILENAME,
+    describe_export_scope,
+    is_export_request,
+)
 from policy import (
     get_policy_critic,
     check_grounding,
@@ -146,6 +152,65 @@ def run_governed_ask(
     prior_context = get_memory().get_context(session_id) if session_id else ""
 
     try:
+        # 2b. Consequential-intent routing. An export / write-back / report
+        #     request is not an analytics question, so it has no catalog target:
+        #     without this it fell through to the generic "no reliable metric"
+        #     decline, making the documented confirmation pause unreachable.
+        #     Route it through the critic into the confirmation gate instead —
+        #     nothing is produced until /api/v1/ask/confirm approves it.
+        if is_export_request(clean_question):
+            scope = describe_export_scope(ds)
+            export_plan = {
+                "plan_type": EXPORT_ACTION_TYPE,
+                "action": EXPORT_ACTION_TYPE,
+                "steps": [],
+                "session_id": session_id,
+                "dataset": getattr(ds, "name", None),
+                "export_scope": scope,
+            }
+            pre = critic.evaluate_plan(
+                clean_question, export_plan, None, tenant_id=tenant_id
+            )
+            record_action_audit(
+                tenant_id=tenant_id,
+                user=user,
+                plan_type=EXPORT_ACTION_TYPE,
+                claimed=[],
+                observed=[],
+                confidence="n/a",
+                flags=pre.reason_codes,
+                reason_codes=pre.reason_codes,
+                question_preview=clean_question,
+            )
+            return {
+                "status": "awaiting_confirmation",
+                "tenant_id": tenant_id,
+                "question": clean_question,
+                "confirmation_token": pre.confirmation_token,
+                "user_message": (
+                    f"Export requires explicit confirmation: this would write all "
+                    f"{scope['rows']} rows / {len(scope['columns'])} columns of the "
+                    f"current dataset to '{EXPORT_FILENAME}'. Approve with POST "
+                    f"/api/v1/ask/confirm to produce it."
+                ),
+                "plan": export_plan,
+                "plan_type": EXPORT_ACTION_TYPE,
+                "flags": pre.reason_codes,
+                "confidence": "n/a",
+                "caveats": [
+                    "Consequential action paused pending human confirmation; "
+                    "no data has left the session."
+                ],
+                "claimed_tools_metrics": [],
+                "observed_tools_metrics": [],
+                "policy": {
+                    "phase": 4,
+                    "enforced": True,
+                    "decision": "awaiting_confirmation",
+                },
+                "invariant": INVARIANT,
+            }
+
         # 3. Plan (deterministic fallbacks + LLM, allowlist only).
         the_plan, early_response = _resolve_question(
             clean_question,

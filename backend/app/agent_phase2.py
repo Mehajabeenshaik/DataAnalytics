@@ -1188,6 +1188,295 @@ def _parse_month(q: str) -> int | None:
     return None
 
 
+# ── Categorical-VALUE routing (filtered aggregates / shares / comparisons) ──
+#
+# The month-only `filtered_agg` tool could not express "count/sum/avg of X
+# where categorical_col = value". Without a route for that shape the planner
+# fell through to an UNFILTERED aggregate and returned a confidently wrong
+# number (e.g. "how many orders are in the Electronics category?" -> 20, the
+# whole table). These helpers resolve a categorical VALUE named in a question
+# and route it to the filtered/share tools instead.
+
+# Cached distinct values per (DataSource instance, column) so one question
+# never issues the same DISTINCT scan twice.
+_DISTINCT_VALUES_ATTR = "_distinct_cat_values_cache"
+
+# A column with more distinct values than this is treated as free text, not a
+# dimension: matching arbitrary values from it would produce false filters.
+_MAX_CATEGORICAL_CARDINALITY = 50
+
+
+def _distinct_values(ds: DataSource, col_name: str, limit: int = 500) -> list[str]:
+    """Distinct non-null text values of a categorical column (bounded + cached)."""
+    cache = getattr(ds, _DISTINCT_VALUES_ATTR, None)
+    if cache is None:
+        cache = {}
+        setattr(ds, _DISTINCT_VALUES_ATTR, cache)
+    if col_name in cache:
+        return cache[col_name]
+    values: list[str] = []
+    try:
+        df = ds.query(
+            f'SELECT DISTINCT CAST("{col_name}" AS VARCHAR) AS v '
+            f'FROM {ds.table_name} WHERE "{col_name}" IS NOT NULL LIMIT {int(limit)}'
+        )
+        values = [str(v) for v in df["v"].tolist()]
+    except Exception:
+        values = []
+    cache[col_name] = values
+    return values
+
+
+def _value_mentioned(value: str, q: str) -> bool:
+    """True when `value` appears in the question as a whole token/phrase.
+
+    Token characters include '-' and '_' so a hyphenated/phrase value match is
+    exact in BOTH directions: 'Furniture' must not match inside 'Furniture-XL'
+    (a value that does not exist), and multi-word values ('Home Office') still
+    match normally.
+    """
+    v = str(value).strip().lower()
+    if len(v) < 2:
+        return False
+    return re.search(rf"(?<![a-z0-9_\-]){re.escape(v)}(?![a-z0-9_\-])", q) is not None
+
+
+def _categorical_value_pairs(ds: DataSource, q: str) -> list[tuple[str, str]]:
+    """(column, value) pairs for categorical VALUES named in the question.
+
+    Longest values first so a multi-word value wins over a shorter value it
+    contains. This is the hook that stops a question naming specific entities
+    from being answered by an unfiltered / global aggregate.
+    """
+    if not getattr(ds, "profile", None):
+        return []
+    pairs: list[tuple[str, str]] = []
+    for c in ds.profile.columns:
+        if not c.is_categorical:
+            continue
+        n_unique = getattr(c, "n_unique", None)
+        if n_unique is not None and n_unique > _MAX_CATEGORICAL_CARDINALITY:
+            continue  # free-text column, not a filterable dimension
+        for v in sorted(_distinct_values(ds, c.name), key=len, reverse=True):
+            if _value_mentioned(v, q):
+                pairs.append((c.name, v))
+    return pairs
+
+
+def _pick_value_pair(
+    ds: DataSource,
+    pairs: list[tuple[str, str]],
+    explicit_col: str | None,
+) -> tuple[str, str] | None:
+    """Choose the (column, value) pair a question filters on.
+
+    Prefers the column the question names explicitly (e.g. "... Electronics
+    category" -> the 'category' column); otherwise falls back to the
+    lowest-cardinality column, which is the most dimension-like.
+    """
+    if explicit_col:
+        for col, val in pairs:
+            if col == explicit_col:
+                return (col, val)
+    if not pairs:
+        return None
+    def _cardinality(col: str) -> int:
+        for c in ds.profile.columns:
+            if c.name == col:
+                return getattr(c, "n_unique", None) or 0
+        return 0
+    return sorted(pairs, key=lambda cv: _cardinality(cv[0]))[0]
+
+
+_COMPARISON_RE = re.compile(
+    r"\b(higher|lower|greater|more|less|bigger|smaller|better|worse|"
+    r"vs\.?|versus|compare|compared|difference)\b"
+)
+_SHARE_RE = re.compile(r"\b(percent(?:age)?|share|proportion)\b|%")
+_COUNT_RE = re.compile(r"\b(how many|count|number of)\b")
+_AGG_WORD_RE = re.compile(
+    r"\b(total|sum|average|avg|mean|max(?:imum)?|highest|largest|"
+    r"min(?:imum)?|lowest|smallest)\b"
+)
+# "<phrase> category|region|..." — a filter on a dimension whose value we must
+# resolve. Used to refuse cleanly when the named value does not exist.
+_DIMENSION_PHRASE_RE = re.compile(
+    r"\b(?:in|for|within|from)\s+(?:the\s+)?([a-z0-9][a-z0-9 _\-]{1,40}?)\s+"
+    r"(category|categories|region|regions|status|segment|department|country|city|state)\b"
+)
+# Bare articles/quantifiers the phrase capture can backtrack into ("in the
+# region ..." would otherwise yield phrase='the'). Never a filter value.
+_DIMENSION_WORDS_RE = re.compile(
+    r"\b(category|categories|region|regions|status|segment|department|"
+    r"country|city|state)\b"
+)
+# Words that can never be part of a filter VALUE. The phrase capture is lazy, so
+# a question like "Total sales in January by region" would otherwise yield the
+# phrase "january by" — a month-and-connector fragment, not a value. Rejecting
+# any phrase that CONTAINS one of these keeps the refusal honest.
+_PHRASE_BLOCKED_WORDS = {
+    "the", "a", "an", "each", "every", "any", "all", "our", "this", "that",
+    "those", "these", "it", "its", "their", "his", "her", "your", "my",
+    "same", "other", "another", "given", "particular", "entire", "whole",
+    "by", "in", "for", "with", "of", "per", "and", "or", "vs", "versus",
+    "than", "from", "to", "on", "at", "into", "over", "under", "between",
+}
+# Sentinel prefix for an explicit refusal from the value-filter route; the
+# rescue path in _resolve_question must never override it (see below).
+_NO_SUCH_FILTER_VALUE = "no such filter value:"
+
+
+def _forced_categorical_filter(question: str, ds: DataSource) -> "Plan | None":
+    """Deterministic plans for questions that FILTER on a categorical value.
+
+    Covers three shapes the metric/tool catalog could not express before, each
+    of which used to fall through to an UNFILTERED aggregate:
+
+      A) '<pct|share> of total <value_col> came from <value>'
+      B) '<agg> <value_col> in/for the <value> <dimension>'
+      C) 'is <agg> <value_col> in <value> higher than in <value2>'
+
+    Returns an explicit REFUSING plan when the question clearly filters on a
+    dimension but names a value that does not exist, so the agent declines
+    instead of answering with a global/unfiltered number.
+    """
+    q = (question or "").lower()
+    if not q or not getattr(ds, "profile", None):
+        return None
+
+    cats, nums, _dates = _profile_maps(ds)
+    if not cats or not nums:
+        return None
+
+    pairs = _categorical_value_pairs(ds, q)
+    explicit_col = _resolve_group_col(q, cats)
+
+    # ── C) Two-entity comparison. Runs before single-entity filtering so
+    #      'is average sales in North higher than in South' returns BOTH named
+    #      values instead of an unrelated global / all-groups aggregate.
+    if _COMPARISON_RE.search(q):
+        by_col: dict[str, list[str]] = {}
+        for col, val in pairs:
+            by_col.setdefault(col, []).append(val)
+        value_col = _resolve_value_col(q, nums)
+        if value_col:
+            for col, vals in by_col.items():
+                if len(vals) < 2:
+                    continue
+                # Answer in the order the question mentions the values, so
+                # "in North higher than in South" reports North first.
+                ordered = sorted(vals, key=lambda v: q.find(v.lower()))
+                agg = "mean" if re.search(r"\b(average|avg|mean)\b", q) else "sum"
+                chosen = ordered[:3]  # plan steps are capped at 3
+                return Plan(
+                    can_answer=True,
+                    reason=(
+                        f"deterministic: categorical_filtered_agg {agg} {value_col} "
+                        f"for {col} in {chosen}"
+                    ),
+                    plan_type="stats_tool",
+                    steps=[
+                        PlanStep(
+                            step_id=i,
+                            action="run_stats",
+                            target="categorical_filtered_agg",
+                            filters={},
+                            args={
+                                "value_col": value_col,
+                                "agg": agg,
+                                "filter_col": col,
+                                "filter_value": val,
+                            },
+                        )
+                        for i, val in enumerate(chosen, start=1)
+                    ],
+                )
+
+    # ── A) Share / percentage of the total for a single categorical value.
+    if _SHARE_RE.search(q) and re.search(r"\b(total|overall|all)\b", q):
+        value_col = _resolve_value_col(q, nums)
+        pair = _pick_value_pair(ds, pairs, explicit_col)
+        if value_col and pair:
+            col, val = pair
+            return Plan(
+                can_answer=True,
+                reason=f"deterministic: percentage_of_total {value_col} for {col}={val}",
+                plan_type="stats_tool",
+                steps=[PlanStep(
+                    step_id=1,
+                    action="run_stats",
+                    target="percentage_of_total",
+                    filters={},
+                    args={"value_col": value_col, "filter_col": col, "filter_value": val},
+                )],
+            )
+
+    # ── B) Single-value filtered aggregate.
+    if _COUNT_RE.search(q) or _AGG_WORD_RE.search(q):
+        agg = "count"
+        if re.search(r"\b(average|avg|mean)\b", q):
+            agg = "mean"
+        elif re.search(r"\b(total|sum)\b", q):
+            agg = "sum"
+        elif re.search(r"\b(max(?:imum)?|highest|largest)\b", q):
+            agg = "max"
+        elif re.search(r"\b(min(?:imum)?|lowest|smallest)\b", q):
+            agg = "min"
+
+        pair = _pick_value_pair(ds, pairs, explicit_col)
+        if pair:
+            col, val = pair
+            # agg='count' counts matching ROWS, so any numeric column is a
+            # valid (unused) row-count proxy when no value column was named.
+            value_col = _resolve_value_col(q, nums) or next(iter(nums.values()))
+            return Plan(
+                can_answer=True,
+                reason=(
+                    f"deterministic: categorical_filtered_agg {agg} {value_col} "
+                    f"where {col}={val}"
+                ),
+                plan_type="stats_tool",
+                steps=[PlanStep(
+                    step_id=1,
+                    action="run_stats",
+                    target="categorical_filtered_agg",
+                    filters={},
+                    args={
+                        "value_col": value_col,
+                        "agg": agg,
+                        "filter_col": col,
+                        "filter_value": val,
+                    },
+                )],
+            )
+
+        # The question filtered on a dimension but named a value that does not
+        # exist at all -> refuse explicitly. Previously this fell through to an
+        # unfiltered total (or a bare 0): a confidently wrong answer.
+        m = _DIMENSION_PHRASE_RE.search(q)
+        if m and explicit_col:
+            phrase = m.group(1).strip()
+            phrase_words = re.findall(r"[a-z0-9][a-z0-9_\-]*", phrase)
+            if (
+                phrase
+                and phrase_words
+                and not any(w in _PHRASE_BLOCKED_WORDS for w in phrase_words)
+                and not _DIMENSION_WORDS_RE.search(phrase)
+            ):
+                return Plan(
+                    can_answer=False,
+                    reason=(
+                        f"{_NO_SUCH_FILTER_VALUE} '{phrase}' is not a value of "
+                        f"column '{explicit_col}' (no rows match) — refusing to "
+                        f"answer with an unfiltered total"
+                    ),
+                    plan_type="no_match",
+                    steps=[],
+                )
+
+    return None
+
+
 def _forced_group_agg(question: str, ds: DataSource) -> "Plan | None":
     """Deterministic plan for '<agg> VALUE by GROUP' questions.
 
@@ -1476,6 +1765,14 @@ def _forced_plan_from_question(question: str, ds: DataSource) -> "Plan | None":
     except Exception:
         metrics = {}
 
+    # Categorical-VALUE filters / shares / two-entity comparisons. Runs BEFORE
+    # the generic group and total routes so a question that names a specific
+    # value ("... in the Electronics category") is answered with that filter
+    # instead of an all-groups / whole-table aggregate.
+    value_plan = _forced_categorical_filter(question, ds)
+    if value_plan is not None:
+        return value_plan
+
     # group agg: average/mean/sum VALUE by GROUP — BEFORE generic routes so
     # "average customer_rating by region" means the rating mean, not a
     # sales sum, and "total sales in January by region" keeps its filter.
@@ -1554,9 +1851,58 @@ def _resolve_question(
             the_plan = Plan(can_answer=False, reason="LLM provider offline", plan_type="no_match")
 
     if not the_plan.can_answer or the_plan.plan_type == "no_match":
+        # An explicit refusal from the deterministic value-filter route must
+        # never be "rescued" into an unfiltered/global aggregate — that is
+        # exactly the silently-wrong answer the route exists to prevent.
+        if (the_plan.reason or "").startswith(_NO_SUCH_FILTER_VALUE):
+            return None, {
+                "answer": (
+                    "I can't answer that: "
+                    + the_plan.reason[len(_NO_SUCH_FILTER_VALUE):].strip()
+                ),
+                "confidence": "n/a",
+                "caveats": [the_plan.reason],
+                "lineage": {
+                    "metrics_or_tools_used": [],
+                    "filters_applied": {},
+                    "notes": "declined_no_such_filter_value",
+                },
+                "plan": the_plan.model_dump(),
+                "results": [],
+            }
+
         metrics = ds.get_metrics()
         q_lower = question.lower()
         matched_step = None
+
+        # A question that names specific categorical VALUES must never be
+        # answered by an unfiltered / global aggregate. If neither the
+        # deterministic routes nor the LLM planner could apply that filter,
+        # decline — returning a whole-table total or an unrelated metric here
+        # would be a confidently wrong answer, which is exactly what the
+        # governed-agent invariant forbids.
+        named_values = _categorical_value_pairs(ds, q_lower)
+        if named_values and not the_plan.can_answer:
+            preview = ", ".join(f"{col}='{val}'" for col, val in named_values[:4])
+            return None, {
+                "answer": (
+                    "I can't answer that reliably: the question filters on "
+                    f"specific values ({preview}) and no approved metric or "
+                    "tool could apply that filter."
+                ),
+                "confidence": "n/a",
+                "caveats": [
+                    "Filtered question with no matching tool — declined instead of "
+                    "returning an unfiltered aggregate."
+                ],
+                "lineage": {
+                    "metrics_or_tools_used": [],
+                    "filters_applied": {},
+                    "notes": "declined_unfiltered_fallback",
+                },
+                "plan": the_plan.model_dump(),
+                "results": [],
+            }
 
         if ds.profile:
             num_cols = [c.name for c in ds.profile.columns if c.is_numeric]

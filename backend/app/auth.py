@@ -231,6 +231,25 @@ def startup():
     from tenant import init_tenant_db
     init_tenant_db()
 
+    # Best-effort PII engine warm-up. Done at BOOT (not lazily on the first
+    # /api/v1/upload) so a missing/broken spaCy model degrades loudly here
+    # instead of surprising one unlucky tenant mid-request — and so the
+    # SystemExit raised by spaCy's auto-download path is caught inside
+    # _get_analyzer() rather than killing the ASGI process later.
+    try:
+        from pii_masker import _get_analyzer
+        if _get_analyzer() is None:
+            logging.getLogger("daana.startup").warning(
+                "PII value-detection unavailable (spaCy model missing/failed "
+                "to load). Column-name-keyword masking will still run; "
+                "value-based NER masking will not. "
+                "Fix: python -m spacy download en_core_web_sm"
+            )
+    except Exception as exc:  # startup must never crash the app
+        logging.getLogger("daana.startup").warning(
+            "PII analyzer warm-up skipped: %s", exc
+        )
+
     # Pre-load local Ollama model in background thread to avoid cold-start delays
     import threading
     def _warmup_model():
